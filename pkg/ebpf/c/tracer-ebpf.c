@@ -556,20 +556,23 @@ static __always_inline void handle_tcp_stats(conn_tuple_t* t, struct sock* sk) {
 static __always_inline int is_http_payload(void* skb, size_t payload_offset, size_t payload_length) {
     // Load the first 8 bytes of the payload
     if (payload_length < 8) {
-		return 0; // Valid HTTP requests & responses must be > 8 bytes
-	}
+        return 0; // Valid HTTP requests & responses must be > 8 bytes
+    }
     char p[8];
 	int i = 0, j = 0;
 	for (i = payload_offset ; i < (payload_offset + 8) ; i++, j++) {
 		p[j] = load_byte(skb , i);
 	}
 
+    char get[3] = "GET";    // test if string literals work
+    char head[4] = "HEAD";
+
     // HTTP messages always begin with a method token (https://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html)
     // We'll consider the following method tokens: GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT, OPTIONS, PATCH
-	if ((p[0] == 'G') && (p[1] == 'E') && (p[2] == 'T')) {
+	if ((p[0] == get[0]) && (p[1] == get[1]) && (p[2] == get[2])) {
 		return 1;
 	}
-    if ((p[0] == 'H') && (p[1] == 'E') && (p[2] == 'A') && (p[3] == 'D')) {
+    if ((p[0] == head[0]) && (p[1] == head[1]) && (p[2] == head[2]) && (p[3] == head[3])) {
 		return 1;
 	}
 	if ((p[0] == 'P') && (p[1] == 'O') && (p[2] == 'S') && (p[3] == 'T')) {
