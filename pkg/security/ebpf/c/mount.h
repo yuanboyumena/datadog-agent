@@ -103,7 +103,7 @@ SYSCALL_COMPAT_KRETPROBE(mount) {
 
     resolve_dentry(dentry, path_key, 0);
 
-    send_mountpoints_events(ctx, event);
+    send_mountpoints_event(ctx, event);
 
     return 0;
 }

@@ -43,7 +43,7 @@ func benchmarkOpen(b *testing.B, rule *rules.RuleDefinition, pathname string, si
 	}
 
 	eventsStats := test.probe.GetEventsStats()
-	eventsStats.GetAndResetLost()
+	eventsStats.GetAndResetReadLostCount("events", -1)
 
 	b.ResetTimer()
 
@@ -81,7 +81,7 @@ func benchmarkOpen(b *testing.B, rule *rules.RuleDefinition, pathname string, si
 
 	time.Sleep(5 * time.Second)
 
-	lost := eventsStats.GetLost()
+	lost := eventsStats.GetReadLostCount("events", -1)
 
 	b.ReportMetric(float64(lost), "lost")
 	b.ReportMetric(float64(count), "events")

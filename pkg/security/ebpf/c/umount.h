@@ -44,7 +44,7 @@ SYSCALL_KRETPROBE(umount) {
     struct proc_cache_t *entry = fill_process_context(&event.process);
     fill_container_context(entry, &event.container);
 
-    send_mountpoints_events(ctx, event);
+    send_mountpoints_event(ctx, event);
 
     return 0;
 }
