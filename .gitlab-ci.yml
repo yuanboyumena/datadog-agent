@@ -3134,6 +3134,7 @@ twistlock_scan-7:
     - $SHORT_CI_COMMIT_SHA = ${CI_COMMIT_SHA}.Substring(0,7)
     - $SRC_TAG = "v${CI_PIPELINE_ID}-${SHORT_CI_COMMIT_SHA}"
     - mkdir ci-scripts
+    - mkdir tmp
     - |
       @"
       Set-PSDebug -Trace 1
@@ -3142,8 +3143,8 @@ twistlock_scan-7:
       If (`$lastExitCode -ne "0") { throw "Previous command returned `$lastExitCode" }
       # GCR Login
       `$DOCKER_REGISTRY_LOGIN = aws ssm get-parameter --region us-east-1 --name ci.datadog-agent.${DOCKER_REGISTRY_LOGIN_SSM_KEY} --with-decryption --query "Parameter.Value" --out text
-      aws ssm get-parameter --region us-east-1 --name ci.datadog-agent.${DOCKER_REGISTRY_PWD_SSM_KEY} --with-decryption --query "Parameter.Value" --out text > /tmp/gcr_key.json
-      gcloud auth activate-service-account "`${DOCKER_REGISTRY_LOGIN}" --key-file=/tmp/gcr_key.json
+      aws ssm get-parameter --region us-east-1 --name ci.datadog-agent.${DOCKER_REGISTRY_PWD_SSM_KEY} --with-decryption --query "Parameter.Value" --out text > tmp/gcr_key.json
+      gcloud auth activate-service-account "`${DOCKER_REGISTRY_LOGIN}" --key-file=tmp/gcr_key.json
       gcloud config set project "`${GOOGLE_PROJECT_ID}"
       If (`$lastExitCode -ne "0") { throw "Previous command returned `$lastExitCode" }
       # DockerHub login
@@ -4401,15 +4402,23 @@ revert_latest_7_google_container_registry:
     - if [[ -z "$NEW_LATEST_RELEASE_7" ]]; then echo "Need release version to revert to"; exit 1; fi
     - inv -e docker.publish-manifest --name gcr.io/datadoghq/agent --tag latest
       --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7},linux/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-win1809,windows/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-win1909,windows/amd64
       --image gcr.io/datadoghq/agent-arm64:${NEW_LATEST_RELEASE_7},linux/arm64
     - inv -e docker.publish-manifest --name gcr.io/datadoghq/agent --tag latest-jmx
       --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx,linux/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx-win1809,windows/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx-win1909,windows/amd64
       --image gcr.io/datadoghq/agent-arm64:${NEW_LATEST_RELEASE_7}-jmx,linux/arm64
     - inv -e docker.publish-manifest --name gcr.io/datadoghq/agent --tag 7
       --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7},linux/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-win1809,windows/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-win1909,windows/amd64
       --image gcr.io/datadoghq/agent-arm64:${NEW_LATEST_RELEASE_7},linux/arm64
     - inv -e docker.publish-manifest --name gcr.io/datadoghq/agent --tag 7-jmx
       --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx,linux/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx-win1809,windows/amd64
+      --image gcr.io/datadoghq/agent-amd64:${NEW_LATEST_RELEASE_7}-jmx-win1909,windows/amd64
     - inv -e docker.publish gcr.io/datadoghq/dogstatsd:${NEW_LATEST_RELEASE_7} gcr.io/datadoghq/dogstatsd:latest
     - inv -e docker.publish gcr.io/datadoghq/dogstatsd:${NEW_LATEST_RELEASE_7} gcr.io/datadoghq/dogstatsd:7
 
