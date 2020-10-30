@@ -195,9 +195,8 @@ static __always_inline bool is_big_endian(void) {
 static __always_inline bool is_ipv4_mapped_ipv6(u64 saddr_h, u64 saddr_l, u64 daddr_h, u64 daddr_l) {
     if (is_big_endian()) {
         return ((saddr_h == 0 && ((u32)(saddr_l >> 32) == 0x0000FFFF)) || (daddr_h == 0 && ((u32)(daddr_l >> 32) == 0x0000FFFF)));
-    } else {
-        return ((saddr_h == 0 && ((u32)saddr_l == 0xFFFF0000)) || (daddr_h == 0 && ((u32)daddr_l == 0xFFFF0000)));
     }
+    return ((saddr_h == 0 && ((u32)saddr_l == 0xFFFF0000)) || (daddr_h == 0 && ((u32)daddr_l == 0xFFFF0000)));
 }
 
 static __always_inline bool dns_stats_enabled() {
@@ -463,7 +462,6 @@ static __always_inline void increment_telemetry_count(enum telemetry_counter cou
         __sync_fetch_and_add(&val->udp_sends_missed, 1);
         break;
     }
-    return;
 }
 
 static __always_inline void cleanup_tcp_conn(struct pt_regs* __attribute__((unused)) ctx, conn_tuple_t* tup) {
@@ -555,7 +553,8 @@ static __always_inline int handle_retransmit(struct sock* sk) {
 }
 
 static __always_inline void handle_tcp_stats(conn_tuple_t* t, struct sock* sk) {
-    u32 rtt = 0, rtt_var = 0;
+    u32 rtt = 0;
+    u32 rtt_var = 0;
     bpf_probe_read(&rtt, sizeof(rtt), ((char*)sk) + offset_rtt());
     bpf_probe_read(&rtt_var, sizeof(rtt_var), ((char*)sk) + offset_rtt_var());
 
@@ -1201,8 +1200,9 @@ int socket__dns_filter(struct __sk_buff* skb) {
     __u16 src_port = load_half(skb, ETH_HLEN + ip_hdr_size + src_port_offset);
     __u16 dst_port = load_half(skb, ETH_HLEN + ip_hdr_size + dst_port_offset);
 
-    if (src_port != 53 && (!dns_stats_enabled() || dst_port != 53))
+    if (src_port != 53 && (!dns_stats_enabled() || dst_port != 53)) {
         return 0;
+    }
 
     return -1;
 }
