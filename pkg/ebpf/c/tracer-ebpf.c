@@ -19,7 +19,10 @@
 #define LOAD_CONSTANT(param, var) asm("%0 = " param " ll" \
                                       : "=r"(var))
 
-enum telemetry_counter{tcp_sent_miscounts, missed_tcp_close, udp_send_processed, udp_send_missed};
+enum telemetry_counter { tcp_sent_miscounts,
+    missed_tcp_close,
+    udp_send_processed,
+    udp_send_missed };
 
 /* This is a key/value store with the keys being a conn_tuple_t for send & recv calls
  * and the values being conn_stats_ts_t *.
@@ -282,9 +285,9 @@ static __always_inline __u64 offset_saddr_fl4() {
 }
 
 static __always_inline __u64 offset_daddr_fl4() {
-     __u64 val = 0;
-     LOAD_CONSTANT("offset_daddr_fl4", val);
-     return val;
+    __u64 val = 0;
+    LOAD_CONSTANT("offset_daddr_fl4", val);
+    return val;
 }
 
 static __always_inline __u64 offset_sport_fl4() {
@@ -294,9 +297,9 @@ static __always_inline __u64 offset_sport_fl4() {
 }
 
 static __always_inline __u64 offset_dport_fl4() {
-     __u64 val = 0;
-     LOAD_CONSTANT("offset_dport_fl4", val);
-     return val;
+    __u64 val = 0;
+    LOAD_CONSTANT("offset_dport_fl4", val);
+    return val;
 }
 
 static __always_inline __u32 get_netns_from_sock(struct sock* sk) {
@@ -447,18 +450,18 @@ static __always_inline void increment_telemetry_count(enum telemetry_counter cou
         return;
     }
     switch (counter_name) {
-        case tcp_sent_miscounts:
-            __sync_fetch_and_add(&val->tcp_sent_miscounts, 1);
-            break;
-        case missed_tcp_close:
-            __sync_fetch_and_add(&val->missed_tcp_close, 1);
-            break;
-        case udp_send_processed:
-            __sync_fetch_and_add(&val->udp_sends_processed, 1);
-            break;
-        case udp_send_missed:
-            __sync_fetch_and_add(&val->udp_sends_missed, 1);
-            break;
+    case tcp_sent_miscounts:
+        __sync_fetch_and_add(&val->tcp_sent_miscounts, 1);
+        break;
+    case missed_tcp_close:
+        __sync_fetch_and_add(&val->missed_tcp_close, 1);
+        break;
+    case udp_send_processed:
+        __sync_fetch_and_add(&val->udp_sends_processed, 1);
+        break;
+    case udp_send_missed:
+        __sync_fetch_and_add(&val->udp_sends_missed, 1);
+        break;
     }
     return;
 }

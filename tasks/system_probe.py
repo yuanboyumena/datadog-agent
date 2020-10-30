@@ -170,13 +170,16 @@ def build_in_docker(
 
 
 @task
-def test(ctx, skip_object_files=False, only_check_bpf_bytes=False, bundle_ebpf=True):
+def test(ctx, skip_object_files=False, only_check_bpf_bytes=False, bundle_ebpf=True, skip_linters=False):
     """
     Run tests on eBPF parts
     If skip_object_files is set to True, this won't rebuild object files
     If only_check_bpf_bytes is set to True this will only check that the assets bundled are
     matching the currently generated object files
     """
+
+    if not skip_linters:
+        cfmt(ctx, fail_on_fmt=True)
 
     if not skip_object_files:
         build_object_files(ctx, bundle_ebpf=bundle_ebpf)
@@ -233,17 +236,19 @@ def nettop(ctx, incremental_build=False, go_mod="vendor"):
 
 
 @task
-def cfmt(ctx):
+def cfmt(ctx, fail_on_fmt=False):
     """
     Format C code using clang-format
     """
-
-    fmtCmd = "clang-format -i -style=file {file}"
+    fmtCmd = "clang-format --verbose -i --style=file --fallback-style=none"
+    if fail_on_fmt:
+        fmtCmd = fmtCmd + " --Werror --dry-run"
 
     files = glob.glob("pkg/ebpf/c/*.[c,h]")
+    files.extend(glob.glob("pkg/ebpf/*.[c,h]"))
+    files.extend(glob.glob("pkg/security/ebpf/c/*.[c,h]"))
+    ctx.run("{cmd} {files}".format(cmd=fmtCmd, files=" ".join(files)))
 
-    for file in files:
-        ctx.run(fmtCmd.format(file=file))
 
 
 @task

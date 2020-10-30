@@ -44,7 +44,7 @@ static __always_inline bool check_family(struct sock* sk, tracer_status_t* statu
     return family == expected_family;
 }
 
-static __always_inline int guess_offsets(tracer_status_t* status, struct sock* skp, struct flowi4 *fl4) {
+static __always_inline int guess_offsets(tracer_status_t* status, struct sock* skp, struct flowi4* fl4) {
     u64 zero = 0;
 
     if (status->state != TRACER_STATE_CHECKING) {
