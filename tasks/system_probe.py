@@ -276,10 +276,10 @@ def ctidy(ctx, fix=False):
     if fix:
         flags.append("--fix")
 
-    ctx.run("clang-tidy {flags} {files} -- {build_flags}".format(
-        flags=" ".join(flags),
-        build_flags=" ".join(build_flags),
-        files=" ".join(files))
+    ctx.run(
+        "clang-tidy {flags} {files} -- {build_flags}".format(
+            flags=" ".join(flags), build_flags=" ".join(build_flags), files=" ".join(files)
+        )
     )
 
 
