@@ -19,10 +19,12 @@
 #define LOAD_CONSTANT(param, var) asm("%0 = " param " ll" \
                                       : "=r"(var))
 
-enum telemetry_counter { tcp_sent_miscounts,
+enum telemetry_counter {
+    tcp_sent_miscounts,
     missed_tcp_close,
     udp_send_processed,
-    udp_send_missed };
+    udp_send_missed
+};
 
 /* This is a key/value store with the keys being a conn_tuple_t for send & recv calls
  * and the values being conn_stats_ts_t *.
