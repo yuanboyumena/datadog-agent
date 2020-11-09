@@ -152,9 +152,15 @@ func (rs *RuleSet) AddRule(ruleDef *RuleDefinition) (*eval.Rule, error) {
 		return nil, fmt.Errorf("found multiple definition of the rule '%s'", ruleDef.ID)
 	}
 
+	var tags []string
+	for k, v := range ruleDef.Tags {
+		tags = append(tags, k+":"+v)
+	}
+
 	rule := &eval.Rule{
 		ID:         ruleDef.ID,
 		Expression: ruleDef.Expression,
+		Tags:       tags,
 	}
 
 	if err := rule.Parse(); err != nil {
@@ -296,7 +302,7 @@ func (rs *RuleSet) Evaluate(event eval.Event) bool {
 
 	for _, rule := range bucket.rules {
 		if rule.GetEvaluator().Eval(ctx) {
-			log.Infof("Rule `%s` matches with event `%s`\n", rule.ID, event)
+			log.Tracef("Rule `%s` matches with event `%s`\n", rule.ID, event)
 
 			rs.NotifyRuleMatch(rule, event)
 			result = true

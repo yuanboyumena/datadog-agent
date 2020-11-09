@@ -73,6 +73,12 @@ func (p *ProcessResolver) addEntry(pid uint32, entry *ProcessCacheEntry) {
 		entry.Timestamp = p.resolvers.TimeResolver.ResolveMonotonicTimestamp(entry.TimestampRaw)
 	}
 
+	// check for an existing entry first to inherit ppid
+	prevEntry, ok := p.entryCache.Get(pid)
+	if ok {
+		entry.PPid = prevEntry.(*ProcessCacheEntry).PPid
+	}
+
 	p.entryCache.Add(pid, entry)
 }
 
@@ -334,7 +340,7 @@ func (p *ProcessResolver) Snapshot(containerResolver *ContainerResolver, mountRe
 
 // NewProcessResolver returns a new process resolver
 func NewProcessResolver(probe *Probe, resolvers *Resolvers) (*ProcessResolver, error) {
-	cache, err := lru.New(10000)
+	cache, err := lru.New(probe.config.PIDCacheSize)
 	if err != nil {
 		return nil, err
 	}
