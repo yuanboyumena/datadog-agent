@@ -3148,7 +3148,8 @@ twistlock_scan-7:
       gcloud config set project ${GOOGLE_PROJECT_ID}
       If (`$lastExitCode -ne "0") { throw "Previous command returned `$lastExitCode" }
       # DockerHub login
-      gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://gcr.io
+      `$ACCESS_TOKEN = gcloud auth print-access-token
+      docker login -u oauth2accesstoken -p "`${ACCESS_TOKEN}" https://gcr.io
       If (`$lastExitCode -ne "0") { throw "Previous command returned `$lastExitCode" }
       ridk enable # This is only needed because invoke docker.publish-manifest calls "cat" which doesn't exist on Windows
       If (`$lastExitCode -ne "0") { throw "Previous command returned `$lastExitCode" }
