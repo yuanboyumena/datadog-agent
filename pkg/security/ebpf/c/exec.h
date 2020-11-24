@@ -179,7 +179,7 @@ int sched_process_fork(struct _tracepoint_sched_process_fork *args) {
     bpf_map_update_elem(&pid_cache, &pid, &event.pid_entry, BPF_ANY);
 
     // send the entry to maintain userspace cache
-    send_process_events(args, event);
+    send_process_event(args, event);
 
     return 0;
 }
@@ -208,7 +208,7 @@ int kprobe_do_exit(struct pt_regs *ctx) {
         struct proc_cache_t *cache_entry = fill_process_context(&event.process);
         fill_container_context(cache_entry, &event.container);
 
-        send_process_events(ctx, event);
+        send_process_event(ctx, event);
     }
     return 0;
 }
@@ -262,7 +262,7 @@ int kprobe_security_bprm_committed_creds(struct pt_regs *ctx) {
             fill_container_context(proc_entry, &event.proc_entry.container);
 
             // send the entry to maintain userspace cache
-            send_process_events(ctx, event);
+            send_process_event(ctx, event);
         }
     }
 

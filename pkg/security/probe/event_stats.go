@@ -20,6 +20,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/pkg/security/config"
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf"
+	"github.com/DataDog/datadog-agent/pkg/security/ebpf/probes"
 )
 
 // PerfMapStats contains the collected metrics for one event and one cpu in a perf buffer statistics map
@@ -88,7 +89,7 @@ func NewEventsStats(ebpfManager *manager.Manager, options manager.Options, confi
 		perfBufferStatsMaps: make(map[string][2]*lib.Map),
 		perfBufferSize:      make(map[string]float64),
 
-		perfBufferMapNameToStatsMapsName: ebpf.GetPerfBufferStatisticsMaps(),
+		perfBufferMapNameToStatsMapsName: probes.GetPerfBufferStatisticsMaps(),
 		statsMapsNameToPerfBufferMapName: make(map[string]string),
 
 		stats:          make(map[string][][maxEventType]PerfMapStats),
