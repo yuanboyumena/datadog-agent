@@ -65,9 +65,21 @@ LOOP:
 	return nil
 }
 
+// Event is the interface that an event must implement to be sent to the backend
+type Event interface {
+	GetTags() []string
+	GetType() string
+}
+
+// RuleEvent is a wrapper used to send an event to the backend
+type RuleEvent struct {
+	RuleID string `json:"rule_id"`
+	Event  Event `json:"event"`
+}
+
 // SendEvent forwards events sent by the runtime security module to Datadog
-func (e *EventServer) SendEvent(rule *eval.Rule, event eval.Event) {
-	data, err := json.Marshal(rules.RuleEvent{Event: event, RuleID: rule.ID})
+func (e *EventServer) SendEvent(rule *eval.Rule, event Event) {
+	data, err := json.Marshal(RuleEvent{Event: event, RuleID: rule.ID})
 	if err != nil {
 		return
 	}

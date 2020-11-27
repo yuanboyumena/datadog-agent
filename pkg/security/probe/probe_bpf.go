@@ -33,6 +33,7 @@ import (
 // EventHandler represents an handler for the events sent by the probe
 type EventHandler interface {
 	HandleEvent(event *Event)
+	HandleCustomEvent(rule *eval.Rule, event *CustomEvent)
 }
 
 // Discarder represents a discarder which is basically the field that we know for sure
@@ -73,7 +74,6 @@ type Probe struct {
 	approvers          map[eval.EventType]activeApprovers
 
 	monitor               *Monitor
-	customEventsGenerator *CustomEventsGenerator
 }
 
 // GetResolvers returns the resolvers of Probe
@@ -193,12 +193,23 @@ func (p *Probe) SetEventHandler(handler EventHandler) {
 	p.handler = handler
 }
 
-// DispatchEvent sends an event to probe event handler
+// DispatchEvent sends an event to the probe event handler
 func (p *Probe) DispatchEvent(event *Event, size uint64, CPU int, perfMap *manager.PerfMap) {
+	log.Tracef("Dispatching event %+v\n", event)
+
 	p.monitor.ProcessEvent(event, size, CPU, perfMap)
 
 	if p.handler != nil {
 		p.handler.HandleEvent(event)
+	}
+}
+
+// DispatchCustomEvent sends a custom event to the probe event handler
+func (p *Probe) DispatchCustomEvent(rule *eval.Rule, event *CustomEvent) {
+	log.Tracef("Dispatching custom event %+v\n", event)
+
+	if p.handler != nil {
+		p.handler.HandleCustomEvent(rule, event)
 	}
 }
 
@@ -213,8 +224,7 @@ func (p *Probe) GetMonitor() *Monitor {
 }
 
 func (p *Probe) handleLostEvents(CPU int, count uint64, perfMap *manager.PerfMap, manager *manager.Manager) {
-	log.Tracef("lost %d events\n", count)
-	p.monitor.perfBufferMonitor.CountLostEvent(count, perfMap, CPU)
+	p.monitor.ProcessLostEvent(count, CPU, perfMap)
 }
 
 var eventZero Event

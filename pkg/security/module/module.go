@@ -163,15 +163,6 @@ func (m *Module) Close() {
 	m.probe.Close()
 }
 
-// RuleMatch is called by the ruleset when a rule matches
-func (m *Module) RuleMatch(rule *eval.Rule, event eval.Event) {
-	if m.rateLimiter.Allow(rule.ID) {
-		m.eventServer.SendEvent(rule, event)
-	} else {
-		log.Tracef("Event on rule %s was dropped due to rate limiting", rule.ID)
-	}
-}
-
 // EventDiscarderFound is called by the ruleset when a new discarder discovered
 func (m *Module) EventDiscarderFound(rs *rules.RuleSet, event eval.Event, field eval.Field, eventType eval.EventType) {
 	if err := m.probe.OnNewDiscarder(rs, event.(*sprobe.Event), field, eventType); err != nil {
@@ -183,6 +174,25 @@ func (m *Module) EventDiscarderFound(rs *rules.RuleSet, event eval.Event, field 
 func (m *Module) HandleEvent(event *sprobe.Event) {
 	if ruleSet := m.ruleSets[atomic.LoadUint64(&m.currentRuleSet)]; ruleSet != nil {
 		ruleSet.Evaluate(event)
+	}
+}
+
+// HandleCustomEvent is called by the probe when an event should be sent to Datadog but doesn't need evaluation
+func (m *Module) HandleCustomEvent(rule *eval.Rule, event *sprobe.CustomEvent) {
+	m.SendEvent(rule, event)
+}
+
+// RuleMatch is called by the ruleset when a rule matches
+func (m *Module) RuleMatch(rule *eval.Rule, event eval.Event) {
+	m.SendEvent(rule, event)
+}
+
+// SendEvent sends an event to the backend after checking that the rate limiter allows it for the provided rule
+func (m *Module) SendEvent(rule *eval.Rule, event Event) {
+	if m.rateLimiter.Allow(rule.ID) {
+		m.eventServer.SendEvent(rule, event)
+	} else {
+		log.Tracef("Event on rule %s was dropped due to rate limiting", rule.ID)
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"github.com/DataDog/ebpf/manager"
 	"github.com/pkg/errors"
 
-	"github.com/DataDog/datadog-agent/pkg/security/config"
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf"
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf/probes"
 )
@@ -56,8 +55,8 @@ func (s *PerfMapStats) MarshalBinary() ([]byte, error) {
 // PerfBufferMonitor holds statistics about the number of lost and received events
 //nolint:structcheck,unused
 type PerfBufferMonitor struct {
-	// config pointer to the config of the runtime security module
-	config *config.Config
+	// probe is a pointer to the Probe
+	probe *Probe
 	// cpuCount holds the current count of CPU
 	cpuCount int
 	// perfBufferStatsMaps holds the pointers to the statistics kernel maps
@@ -82,9 +81,9 @@ type PerfBufferMonitor struct {
 }
 
 // NewPerfBufferMonitor instantiates a new event statistics counter
-func NewPerfBufferMonitor(ebpfManager *manager.Manager, options manager.Options, config *config.Config) (*PerfBufferMonitor, error) {
+func NewPerfBufferMonitor(p *Probe) (*PerfBufferMonitor, error) {
 	es := PerfBufferMonitor{
-		config:              config,
+		probe:               p,
 		cpuCount:            runtime.NumCPU(),
 		perfBufferStatsMaps: make(map[string][2]*lib.Map),
 		perfBufferSize:      make(map[string]float64),
@@ -107,7 +106,7 @@ func NewPerfBufferMonitor(ebpfManager *manager.Manager, options manager.Options,
 	for perfMapName, statsMapsNames := range es.perfBufferMapNameToStatsMapsName {
 		var maps [2]*lib.Map
 		for i, statsMapName := range statsMapsNames {
-			stats, ok, err := ebpfManager.GetMap(statsMapName)
+			stats, ok, err := p.manager.GetMap(statsMapName)
 			if !ok {
 				return nil, errors.Errorf("map %s not found", statsMapName)
 			}
@@ -118,11 +117,11 @@ func NewPerfBufferMonitor(ebpfManager *manager.Manager, options manager.Options,
 		}
 		es.perfBufferStatsMaps[perfMapName] = maps
 		// set default perf buffer size, it will be readjusted in the next loop if needed
-		es.perfBufferSize[perfMapName] = float64(options.DefaultPerfRingBufferSize)
+		es.perfBufferSize[perfMapName] = float64(p.managerOptions.DefaultPerfRingBufferSize)
 	}
 
 	// Prepare user space counters
-	for _, m := range ebpfManager.PerfMaps {
+	for _, m := range p.manager.PerfMaps {
 		var stats [][maxEventType]PerfMapStats
 		var usrLostEvents []uint64
 
@@ -141,7 +140,7 @@ func NewPerfBufferMonitor(ebpfManager *manager.Manager, options manager.Options,
 	}
 
 	// select the buffer selector map
-	bufferSelector, ok, err := ebpfManager.GetMap("buffer_selector")
+	bufferSelector, ok, err := p.manager.GetMap("buffer_selector")
 	if !ok {
 		return nil, errors.Errorf("map buffer_selector not found")
 	}
@@ -360,7 +359,7 @@ func (pbm *PerfBufferMonitor) CountEvent(eventType EventType, count uint64, size
 	atomic.AddUint64(&pbm.stats[m.Name][cpu][eventType].Count, count)
 	atomic.AddUint64(&pbm.stats[m.Name][cpu][eventType].Bytes, size)
 
-	if pbm.config.PerfBufferMonitor {
+	if pbm.probe.config.PerfBufferMonitor {
 		atomic.AddInt64(&pbm.stats[m.Name][cpu][eventType].Usage, -int64(size))
 		atomic.AddInt64(&pbm.stats[m.Name][cpu][eventType].InQueue, -int64(count))
 	}
@@ -392,14 +391,27 @@ func (pbm *PerfBufferMonitor) sendEventsAndBytesReadStats(client *statsd.Client)
 
 func (pbm *PerfBufferMonitor) sendLostEventsReadStats(client *statsd.Client) error {
 	for m := range pbm.readLostEvents {
+		var total int64
+		perCPU := map[int]int64{}
+
 		for cpu := range pbm.readLostEvents[m] {
 			tags := []string{
 				fmt.Sprintf("map:%s", m),
 				fmt.Sprintf("cpu:%d", cpu),
 			}
-			if err := client.Count(MetricPerfBufferLostRead, int64(pbm.getAndResetReadLostCount(m, cpu)), tags, 1.0); err != nil {
+			count := int64(pbm.getAndResetReadLostCount(m, cpu))
+			if err := client.Count(MetricPerfBufferLostRead, count, tags, 1.0); err != nil {
 				return err
 			}
+
+			total += count
+			perCPU[cpu] += count
+		}
+
+		if total > 0 && !pbm.probe.config.PerfBufferMonitor {
+			pbm.probe.DispatchCustomEvent(
+				NewEventLostReadEvent(m, perCPU),
+			)
 		}
 	}
 	return nil
@@ -418,12 +430,21 @@ func (pbm *PerfBufferMonitor) collectAndSendKernelStats(client *statsd.Client) e
 		// select the current statistics buffer in use
 		statsMap := statsMaps[1-pbm.activeMapIndex]
 
+		// total and perEventPerCPU are used for alerting
+		var total uint64
+		perEventPerCPU := map[string]map[int]uint64{}
+
 		// loop through all the values of the active buffer
 		iterator = statsMap.Iterate()
 		for iterator.Next(&id, &stats) {
 			// compute cpu and event type from id
 			cpu := int(id / uint32(maxEventType))
 			evtType := EventType(id % uint32(maxEventType))
+
+			// make sure perEventPerCPU is properly initialized
+			if _, ok := perEventPerCPU[evtType.String()]; !ok {
+				perEventPerCPU[evtType.String()] = map[int]uint64{}
+			}
 
 			// sanity checks:
 			//   - check if the computed cpu id is below the current cpu count
@@ -448,9 +469,19 @@ func (pbm *PerfBufferMonitor) collectAndSendKernelStats(client *statsd.Client) e
 			if err := pbm.sendKernelStats(client, stats, tags, perfMapName, cpu, evtType); err != nil {
 				return err
 			}
+
+			total += stats.Lost
+			perEventPerCPU[evtType.String()][cpu] += stats.Lost
 		}
 		if iterator.Err() != nil {
 			return errors.Wrapf(iterator.Err(), "failed to dump statistics buffer %d of map %s", 1-pbm.activeMapIndex, perfMapName)
+		}
+
+		// send an alert if events were lost
+		if total > 0 {
+			pbm.probe.DispatchCustomEvent(
+				NewEventLostWriteEvent(perfMapName, perEventPerCPU),
+			)
 		}
 	}
 	return nil
@@ -473,29 +504,27 @@ func (pbm *PerfBufferMonitor) sendKernelStats(client *statsd.Client, stats PerfM
 	newUsage := atomic.AddInt64(&pbm.stats[perfMapName][cpu][evtType].Usage, int64(stats.Bytes))
 	newInQueue := atomic.AddInt64(&pbm.stats[perfMapName][cpu][evtType].InQueue, int64(stats.Count))
 
-	if evtType == FileOpenEventType && perfMapName == "events" {
-		// There is a race condition when the system is under pressure: between the time we read the perf buffer stats map
-		// and the time we reach this point, the kernel might have written more events in the perf map, and those events
-		// might have already been read in user space. In that case, usage will yield a negative value. In that case, set
-		// the map usage to 0 as it makes more sense than a negative value.
-		usage := math.Max(float64(newUsage)/pbm.perfBufferSize[perfMapName], 0)
-		if err := client.Gauge(MetricPerfBufferUsage, usage*100, tags, 1.0); err != nil {
-			return err
-		}
+	// There is a race condition when the system is under pressure: between the time we read the perf buffer stats map
+	// and the time we reach this point, the kernel might have written more events in the perf map, and those events
+	// might have already been read in user space. In that case, usage will yield a negative value. In that case, set
+	// the map usage to 0 as it makes more sense than a negative value.
+	usage := math.Max(float64(newUsage)/pbm.perfBufferSize[perfMapName], 0)
+	if err := client.Gauge(MetricPerfBufferUsage, usage*100, tags, 1.0); err != nil {
+		return err
+	}
 
-		// There is a race condition when the system is under pressure: between the time we read the perf buffer stats map
-		// and the time we reach this point, the kernel might have written more events in the perf map, and those events
-		// might have already been read in user space. In that case, usage will yield a negative value. In that case, set
-		// the amount of queued events to 0 as it makes more sens than a negative value.
-		if err := client.Count(MetricPerfBufferInQueue, int64(math.Max(float64(newInQueue), 0)), tags, 1.0); err != nil {
-			return err
-		}
+	// There is a race condition when the system is under pressure: between the time we read the perf buffer stats map
+	// and the time we reach this point, the kernel might have written more events in the perf map, and those events
+	// might have already been read in user space. In that case, usage will yield a negative value. In that case, set
+	// the amount of queued events to 0 as it makes more sens than a negative value.
+	if err := client.Count(MetricPerfBufferInQueue, int64(math.Max(float64(newInQueue), 0)), tags, 1.0); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (pbm *PerfBufferMonitor) SendStats(client *statsd.Client) error {
-	if pbm.config.PerfBufferMonitor {
+	if pbm.probe.config.PerfBufferMonitor {
 		if err := pbm.collectAndSendKernelStats(client); err != nil {
 			return err
 		}
