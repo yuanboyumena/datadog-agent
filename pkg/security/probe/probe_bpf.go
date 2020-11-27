@@ -30,11 +30,6 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
-const (
-	// MetricPrefix is the prefix of the metrics sent by the runtime security agent
-	MetricPrefix = "datadog.runtime_security"
-)
-
 // EventHandler represents an handler for the events sent by the probe
 type EventHandler interface {
 	HandleEvent(event *Event)
@@ -57,25 +52,28 @@ var (
 // Probe represents the runtime security eBPF probe in charge of
 // setting up the required kProbes and decoding events sent from the kernel
 type Probe struct {
-	manager            *manager.Manager
-	managerOptions     manager.Options
-	config             *config.Config
-	handler            EventHandler
-	resolvers          *Resolvers
+	manager        *manager.Manager
+	managerOptions manager.Options
+	config         *config.Config
+	startTime      time.Time
+	kernelVersion  kernel.Version
+	_              uint32 // padding for goarch=386
+
+	handler    EventHandler
+	resolvers  *Resolvers
+	event      *Event
+	mountEvent *Event
+
 	pidDiscarders      *lib.Map
 	inodeDiscarders    *lib.Map
+	flushingDiscarders int64
+	discarderHandlers  map[eval.EventType][]onDiscarderHandler
 	invalidDiscarders  map[eval.Field]map[interface{}]bool
 	regexCache         *simplelru.LRU
-	flushingDiscarders int64
 	approvers          map[eval.EventType]activeApprovers
-	syscallMonitor     *SyscallMonitor
-	loadController     *LoadController
-	kernelVersion      kernel.Version
-	_                  uint32 // padding for goarch=386
-	eventsStats        *EventsStats
-	startTime          time.Time
-	event              *Event
-	mountEvent         *Event
+
+	monitor               *Monitor
+	customEventsGenerator *CustomEventsGenerator
 }
 
 // GetResolvers returns the resolvers of Probe
@@ -106,7 +104,7 @@ func (p *Probe) detectKernelVersion() {
 }
 
 // Init initializes the probe
-func (p *Probe) Init() error {
+func (p *Probe) Init(client *statsd.Client) error {
 	p.startTime = time.Now()
 	p.detectKernelVersion()
 
@@ -166,20 +164,13 @@ func (p *Probe) Init() error {
 		return err
 	}
 
-	p.eventsStats, err = NewEventsStats(p.manager, p.managerOptions, p.config)
-	if err != nil {
-		return errors.Wrap(err, "couldn't create events statistics monitor")
-	}
-
 	if err := p.resolvers.Start(); err != nil {
 		return err
 	}
 
-	if p.config.SyscallMonitor {
-		p.syscallMonitor, err = NewSyscallMonitor(p.manager)
-		if err != nil {
-			return err
-		}
+	p.monitor, err = NewMonitor(p, client)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -190,7 +181,10 @@ func (p *Probe) Start() error {
 	if err := p.manager.Start(); err != nil {
 		return err
 	}
-	go p.loadController.Start(context.Background())
+
+	if err := p.monitor.Start(context.Background()); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -200,30 +194,27 @@ func (p *Probe) SetEventHandler(handler EventHandler) {
 }
 
 // DispatchEvent sends an event to probe event handler
-func (p *Probe) DispatchEvent(event *Event) {
+func (p *Probe) DispatchEvent(event *Event, size uint64, CPU int, perfMap *manager.PerfMap) {
+	p.monitor.ProcessEvent(event, size, CPU, perfMap)
+
 	if p.handler != nil {
 		p.handler.HandleEvent(event)
 	}
 }
 
 // SendStats sends statistics about the probe to Datadog
-func (p *Probe) SendStats(statsdClient *statsd.Client) error {
-	if p.syscallMonitor != nil {
-		if err := p.syscallMonitor.SendStats(statsdClient); err != nil {
-			return errors.Wrap(err, "failed to send syscall monitor stats")
-		}
-	}
-	return p.eventsStats.SendStats(statsdClient)
+func (p *Probe) SendStats() error {
+	return p.monitor.SendStats()
 }
 
-// GetEventsStats returns statistics about the events received by the probe
-func (p *Probe) GetEventsStats() *EventsStats {
-	return p.eventsStats
+// GetMonitor returns the monitor of the probe
+func (p *Probe) GetMonitor() *Monitor {
+	return p.monitor
 }
 
 func (p *Probe) handleLostEvents(CPU int, count uint64, perfMap *manager.PerfMap, manager *manager.Manager) {
 	log.Tracef("lost %d events\n", count)
-	p.eventsStats.CountLostEvent(count, perfMap, CPU)
+	p.monitor.perfBufferMonitor.CountLostEvent(count, perfMap, CPU)
 }
 
 var eventZero Event
@@ -296,9 +287,7 @@ func (p *Probe) handleMountEvent(CPU int, data []byte, perfMap *manager.PerfMap,
 		return
 	}
 
-	p.eventsStats.CountEvent(eventType, 1, uint64(len(data)), perfMap, CPU)
-	p.loadController.Count(eventType, event.Process.Pid)
-	p.DispatchEvent(event)
+	p.DispatchEvent(event, uint64(len(data)), CPU, perfMap)
 }
 
 func (p *Probe) handleEvent(CPU int, data []byte, perfMap *manager.PerfMap, manager *manager.Manager) {
@@ -430,16 +419,13 @@ func (p *Probe) handleEvent(CPU int, data []byte, perfMap *manager.PerfMap, mana
 		return
 	}
 
-	p.eventsStats.CountEvent(eventType, 1, uint64(len(data)), perfMap, CPU)
-	p.loadController.Count(eventType, event.Process.Pid)
-
 	// resolve event context
 	if eventType != ExitEventType {
 		event.ResolveProcessCacheEntry()
 	}
 
 	log.Tracef("Dispatching event %+v\n", event)
-	p.DispatchEvent(event)
+	p.DispatchEvent(event, uint64(len(data)), CPU, perfMap)
 }
 
 // OnNewDiscarder is called when a new discarder is found
@@ -709,12 +695,11 @@ func (p *Probe) GetDebugStats() map[string]interface{} {
 }
 
 // NewProbe instantiates a new runtime security agent probe
-func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
+func NewProbe(config *config.Config) (*Probe, error) {
 	regexCache, err := simplelru.NewLRU(64, nil)
 	if err != nil {
 		return nil, err
 	}
-
 	p := &Probe{
 		config:            config,
 		invalidDiscarders: getInvalidDiscarders(),
@@ -740,13 +725,7 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 	p.resolvers = resolvers
 	p.event = NewEvent(p.resolvers)
 	p.mountEvent = NewEvent(p.resolvers)
-	p.loadController, err = NewLoadController(p, client)
-	if err != nil {
-		return nil, err
-	}
-
 	eventZero.resolvers = p.resolvers
-
 	return p, nil
 }
 

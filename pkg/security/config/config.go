@@ -56,8 +56,8 @@ type Config struct {
 	LoadControllerControlPeriod time.Duration
 	// PerfBufferMonitor activates the perf ring buffer monitor
 	PerfBufferMonitor bool
-	// EventsStatsPollingInterval determines how often metrics should be polled
-	EventsStatsPollingInterval time.Duration
+	// StatsPollingInterval determines how often metrics should be polled from the kernel
+	StatsPollingInterval time.Duration
 	// StatsdAddr defines the statsd address
 	StatsdAddr string
 }
@@ -80,7 +80,7 @@ func NewConfig(cfg *config.AgentConfig) (*Config, error) {
 		LoadControllerDiscarderTimeout:     time.Duration(aconfig.Datadog.GetInt("runtime_security_config.load_controller.discarder_timeout")) * time.Second,
 		LoadControllerControlPeriod:        time.Duration(aconfig.Datadog.GetInt("runtime_security_config.load_controller.control_period")) * time.Second,
 		PerfBufferMonitor:                  aconfig.Datadog.GetBool("runtime_security_config.perf_buffer_monitor.enabled"),
-		EventsStatsPollingInterval:         time.Duration(aconfig.Datadog.GetInt("runtime_security_config.events_stats.polling_interval")) * time.Second,
+		StatsPollingInterval:               time.Duration(aconfig.Datadog.GetInt("runtime_security_config.events_stats.polling_interval")) * time.Second,
 		StatsdAddr:                         fmt.Sprintf("%s:%d", cfg.StatsdHost, cfg.StatsdPort),
 	}
 

@@ -74,7 +74,7 @@ func (m *Module) Register(httpMux *http.ServeMux) error {
 
 	// initialize the eBPF manager and load the programs and maps in the kernel. At this stage, the probes are not
 	// running yet.
-	if err := m.probe.Init(); err != nil {
+	if err := m.probe.Init(m.statsdClient); err != nil {
 		return errors.Wrap(err, "failed to init probe")
 	}
 
@@ -190,13 +190,13 @@ func (m *Module) statsMonitor(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	ticker := time.NewTicker(m.config.EventsStatsPollingInterval)
+	ticker := time.NewTicker(m.config.StatsPollingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			if err := m.probe.SendStats(m.statsdClient); err != nil {
+			if err := m.probe.SendStats(); err != nil {
 				log.Debug(err)
 			}
 			if err := m.rateLimiter.SendStats(m.statsdClient); err != nil {
@@ -251,7 +251,7 @@ func NewModule(cfg *config.Config) (api.Module, error) {
 		log.Warn("Logs won't be send to DataDog")
 	}
 
-	probe, err := sprobe.NewProbe(cfg, statsdClient)
+	probe, err := sprobe.NewProbe(cfg)
 	if err != nil {
 		return nil, err
 	}
