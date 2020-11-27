@@ -313,26 +313,26 @@ struct perf_map_stats_t {
     u64 lost;
 };
 
+// perf_sizeof returns the size of the buffer written in the perf map. Depending on the size of the event, a padding
+// might be required.
+// TODO(WILL): 4 is the padding required for open, check if the padding can be computed for the other events
+#define perf_sizeof(size)                                                                                              \
+    size + 4                                                                                                           \
+
 #define send_event_and_stats(ctx, kernel_event, perf_map, stats_buffer_fb, stats_buffer_bb)                            \
                                                                                                                        \
-    u64 size = sizeof(event);                                                                                          \
+    u64 size = sizeof(kernel_event);                                                                                   \
     int cpu = bpf_get_smp_processor_id();                                                                              \
     int perf_ret = bpf_perf_event_output(ctx, &perf_map, cpu, &kernel_event, size);                                    \
                                                                                                                        \
     if ((cpu < STATS_MAX_CPU_COUNT) && (kernel_event.event.type < EVENT_MAX)) {                                        \
-        u32 buffer_key = PERF_BUFFER_MONITOR_KEY;                                                                      \
-        u32 *buffer_id = bpf_map_lookup_elem(&buffer_selector, &buffer_key);                                           \
-        if (buffer_id != NULL) {                                                                                       \
+        struct bpf_map_def *stats_buffer = select_buffer(PERF_BUFFER_MONITOR_KEY, &stats_buffer_fb, &stats_buffer_bb); \
+        if (stats_buffer != NULL) {                                                                                    \
             u32 stats_key = kernel_event.event.type + cpu * EVENT_MAX;                                                 \
-            struct perf_map_stats_t *stats;                                                                            \
-            if (*buffer_id) {                                                                                          \
-                stats = bpf_map_lookup_elem(&stats_buffer_fb, &stats_key);                                             \
-            } else {                                                                                                   \
-                stats = bpf_map_lookup_elem(&stats_buffer_bb, &stats_key);                                             \
-            }                                                                                                          \
+            struct perf_map_stats_t *stats = bpf_map_lookup_elem(stats_buffer, &stats_key);                            \
             if (stats != NULL) {                                                                                       \
                 if (!perf_ret) {                                                                                       \
-                    __sync_fetch_and_add(&stats->bytes, size + 4);                                                     \
+                    __sync_fetch_and_add(&stats->bytes, perf_sizeof(size));                                            \
                     __sync_fetch_and_add(&stats->count, 1);                                                            \
                 } else {                                                                                               \
                     __sync_fetch_and_add(&stats->lost, 1);                                                             \
