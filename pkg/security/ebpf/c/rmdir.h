@@ -11,16 +11,23 @@ struct rmdir_event_t {
     struct file_t file;
 };
 
+int __attribute__((always_inline)) rmdir_approvers(struct syscall_cache_t *syscall) {
+    return basename_approver(syscall, syscall->rmdir.dentry, EVENT_RMDIR);
+}
+int __attribute__((always_inline)) unlink_approvers(struct syscall_cache_t *syscall);
+
 SYSCALL_KPROBE0(rmdir) {
     struct syscall_cache_t syscall = {
         .type = SYSCALL_RMDIR,
+        .policy = fetch_policy(EVENT_RMDIR),
     };
 
-    cache_syscall(&syscall, EVENT_RMDIR);
+    cache_syscall(&syscall);
 
     return 0;
 }
 
+// security_inode_rmdir is shared between rmdir and unlink syscalls
 SEC("kprobe/security_inode_rmdir")
 int kprobe__security_inode_rmdir(struct pt_regs *ctx) {
     struct syscall_cache_t *syscall = peek_syscall(SYSCALL_RMDIR | SYSCALL_UNLINK);
@@ -53,6 +60,11 @@ int kprobe__security_inode_rmdir(struct pt_regs *ctx) {
             // the mount id of path_key is resolved by kprobe/mnt_want_write. It is already set by the time we reach this probe.
             key = syscall->rmdir.path_key;
 
+            syscall->rmdir.dentry = dentry;
+            if (filter_syscall(syscall, rmdir_approvers)) {
+                return mark_as_discarded(syscall);
+            }
+
             break;
         case SYSCALL_UNLINK:
             event_type = EVENT_UNLINK;
@@ -73,21 +85,23 @@ int kprobe__security_inode_rmdir(struct pt_regs *ctx) {
             // the mount id of path_key is resolved by kprobe/mnt_want_write. It is already set by the time we reach this probe.
             key = syscall->unlink.path_key;
 
+            syscall->unlink.dentry = dentry;
+            syscall->policy = fetch_policy(EVENT_RMDIR);
+            if (filter_syscall(syscall, rmdir_approvers)) {
+                return mark_as_discarded(syscall);
+            }
+
             break;
     }
 
     if (discarded_by_process(syscall->policy.mode, event_type)) {
-        invalidate_inode(ctx, key.mount_id, key.ino, 1);
-
-        return 0;
+        return mark_as_discarded(syscall);
     }
 
     if (dentry != NULL) {
         int ret = resolve_dentry(dentry, key, syscall->policy.mode != NO_FILTER ? event_type : 0);
         if (ret == DENTRY_DISCARDED) {
-            invalidate_inode(ctx, key.mount_id, key.ino, 1);
-
-            pop_syscall(syscall->type);
+            return mark_as_discarded(syscall);
         }
     }
 
@@ -99,22 +113,23 @@ SYSCALL_KRETPROBE(rmdir) {
     if (!syscall)
         return 0;
 
-    int retval = PT_REGS_RC(ctx);
+    // ensure that we invalidate all the layers
+    u64 inode = syscall->rmdir.path_key.ino;
+    invalidate_path_key(ctx, &syscall->rmdir.path_key, 1);
 
     // add an real entry to reach the first dentry with the proper inode
-    u64 inode = syscall->rmdir.path_key.ino;
     if (syscall->rmdir.real_inode) {
         inode = syscall->rmdir.real_inode;
+        invalidate_inode(ctx, syscall->rmdir.path_key.mount_id, inode, 1);
         link_dentry_inode(syscall->rmdir.path_key, inode);
     }
 
+    int retval = PT_REGS_RC(ctx);
     if (IS_UNHANDLED_ERROR(retval)) {
-        invalidate_inode(ctx, syscall->rmdir.path_key.mount_id, inode, 0);
         return 0;
     }
 
-    int enabled = is_event_enabled(EVENT_RMDIR);
-    if (enabled) {
+    if (!syscall->discarded && is_event_enabled(EVENT_RMDIR)) {
         struct rmdir_event_t event = {
             .event.type = EVENT_RMDIR,
             .event.timestamp = bpf_ktime_get_ns(),
@@ -132,8 +147,6 @@ SYSCALL_KRETPROBE(rmdir) {
 
         send_event(ctx, event);
     }
-
-    invalidate_inode(ctx, syscall->rmdir.path_key.mount_id, inode, !enabled);
 
     return 0;
 }

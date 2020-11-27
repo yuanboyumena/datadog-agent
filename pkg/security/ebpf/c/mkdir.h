@@ -13,19 +13,25 @@ struct mkdir_event_t {
     u32 padding;
 };
 
+int __attribute__((always_inline)) mkdir_approvers(struct syscall_cache_t *syscall) {
+    return basename_approver(syscall, syscall->mkdir.dentry, EVENT_MKDIR);
+}
+
 long __attribute__((always_inline)) trace__sys_mkdir(umode_t mode) {
+    struct policy_t policy = fetch_policy(EVENT_MKDIR);
+    if (discarded_by_process(policy.mode, EVENT_MKDIR)) {
+        return 0;
+    }
+
     struct syscall_cache_t syscall = {
         .type = SYSCALL_MKDIR,
+        .policy = policy,
         .mkdir = {
             .mode = mode
         }
     };
 
-    cache_syscall(&syscall, EVENT_MKDIR);
-
-    if (discarded_by_process(syscall.policy.mode, EVENT_MKDIR)) {
-        pop_syscall(SYSCALL_MKDIR);
-    }
+    cache_syscall(&syscall);
 
     return 0;
 }
@@ -56,6 +62,10 @@ int kprobe__vfs_mkdir(struct pt_regs *ctx) {
 
     syscall->mkdir.dentry = dentry;
     syscall->mkdir.path_key = get_dentry_key_path(syscall->mkdir.dentry, syscall->mkdir.path);
+
+    if (filter_syscall(syscall, mkdir_approvers)) {
+        return discard_syscall(syscall);
+    }
 
     return 0;
 }

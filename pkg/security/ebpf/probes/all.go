@@ -57,12 +57,12 @@ func AllMaps() []*manager.Map {
 		{Name: "filter_policy"},
 		{Name: "inode_discarders"},
 		{Name: "pid_discarders"},
+		{Name: "basename_approvers"},
 		// Dentry resolver table
 		{Name: "pathnames"},
 		// Snapshot table
 		{Name: "inode_info_cache"},
 		// Open tables
-		{Name: "open_basename_approvers"},
 		{Name: "open_flags_approvers"},
 		// Exec tables
 		{Name: "proc_cache"},

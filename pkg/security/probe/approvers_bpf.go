@@ -14,18 +14,18 @@ import (
 type activeApprover = activeKFilter
 type activeApprovers = activeKFilters
 
-func approveBasename(probe *Probe, tableName string, basename string) (activeApprover, error) {
-	return &mapEntry{
+func approveBasename(probe *Probe, tableName string, eventType EventType, basename string) (activeApprover, error) {
+	return &mapEventMask{
 		tableName: tableName,
 		key:       basename,
 		tableKey:  ebpf.NewStringMapItem(basename, BasenameFilterSize),
-		value:     ebpf.ZeroUint8MapItem,
+		eventMask: uint64(1 << (eventType - 1)),
 	}, nil
 }
 
-func approveBasenames(probe *Probe, tableName string, basenames ...string) (approvers []activeApprover, _ error) {
+func approveBasenames(probe *Probe, tableName string, eventType EventType, basenames ...string) (approvers []activeApprover, _ error) {
 	for _, basename := range basenames {
-		activeApprover, err := approveBasename(probe, tableName, basename)
+		activeApprover, err := approveBasename(probe, tableName, eventType, basename)
 		if err != nil {
 			return nil, err
 		}

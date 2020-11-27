@@ -12,12 +12,18 @@ struct rename_event_t {
     struct file_t new;
 };
 
+int __attribute__((always_inline)) rename_approvers(struct syscall_cache_t *syscall) {
+    return basename_approver(syscall, syscall->rename.src_dentry, EVENT_RENAME) ||
+           basename_approver(syscall, syscall->rename.target_dentry, EVENT_RENAME);
+}
+
 int __attribute__((always_inline)) trace__sys_rename() {
     struct syscall_cache_t syscall = {
+        .policy = fetch_policy(EVENT_RENAME),
         .type = SYSCALL_RENAME,
     };
 
-    cache_syscall(&syscall, EVENT_RENAME);
+    cache_syscall(&syscall);
 
     return 0;
 }
@@ -42,6 +48,7 @@ int kprobe__vfs_rename(struct pt_regs *ctx) {
 
     struct dentry *dentry = (struct dentry *)PT_REGS_PARM2(ctx);
     struct dentry *target_dentry = (struct dentry *)PT_REGS_PARM4(ctx);
+
     syscall->rename.target_key.ino = get_dentry_ino(target_dentry);
 
     // if second pass, ex: overlayfs, just cache the inode that will be used in ret
@@ -51,6 +58,12 @@ int kprobe__vfs_rename(struct pt_regs *ctx) {
     }
 
     syscall->rename.src_dentry = dentry;
+    syscall->rename.target_dentry = target_dentry;
+
+    if (filter_syscall(syscall, rename_approvers)) {
+        return mark_as_discarded(syscall);
+    }
+
     syscall->rename.src_overlay_numlower = get_overlay_numlower(syscall->rename.src_dentry);
 
     // we generate a fake source key as the inode is (can be ?) reused
@@ -58,6 +71,11 @@ int kprobe__vfs_rename(struct pt_regs *ctx) {
 
     // the mount id of path_key is resolved by kprobe/mnt_want_write. It is already set by the time we reach this probe.
     resolve_dentry(syscall->rename.src_dentry, syscall->rename.src_key, 0);
+
+    // If we are discarded, we still want to invalidate the inode
+    if (discarded_by_process(syscall->policy.mode, EVENT_RENAME)) {
+        return mark_as_discarded(syscall);
+    }
 
     return 0;
 }
@@ -67,14 +85,12 @@ int __attribute__((always_inline)) trace__sys_rename_ret(struct pt_regs *ctx) {
     if (!syscall)
         return 0;
 
-    int retval = PT_REGS_RC(ctx);
-
     // invalidate non ovl inode, case of folder renamed
     invalidate_inode(ctx, syscall->rename.target_key.mount_id, get_dentry_ino(syscall->rename.src_dentry), 1);
 
     // we invalidate the inode of the overridden file
     if (syscall->rename.target_key.ino) {
-        invalidate_inode(ctx, syscall->rename.target_key.mount_id, syscall->rename.target_key.ino, 1);
+        invalidate_path_key(ctx, &syscall->rename.target_key, 1);
     }
 
     // Warning: we use the src_dentry twice for compatibility with CentOS. Do not change it :)
@@ -82,16 +98,15 @@ int __attribute__((always_inline)) trace__sys_rename_ret(struct pt_regs *ctx) {
     syscall->rename.target_key.ino = get_dentry_ino(syscall->rename.src_dentry);
     if (syscall->rename.real_src_dentry) {
         syscall->rename.target_key.ino = get_dentry_ino(syscall->rename.real_src_dentry);
+        invalidate_inode(ctx, syscall->rename.target_key.mount_id, syscall->rename.target_key.ino, 1);
     }
 
-    // If we are discarded, we still want to invalidate the inode
-    if (discarded_by_process(syscall->policy.mode, EVENT_RENAME) || (IS_UNHANDLED_ERROR(retval))) {
-        invalidate_inode(ctx, syscall->rename.target_key.mount_id, syscall->rename.target_key.ino, 1);
+    int retval = PT_REGS_RC(ctx);
+    if (IS_UNHANDLED_ERROR(retval)) {
         return 0;
     }
 
-    int enabled = is_event_enabled(EVENT_RENAME);
-    if (enabled) {
+    if (!syscall->discarded && is_event_enabled(EVENT_RENAME)) {
         syscall->rename.target_key.path_id = get_path_id(1);
 
         struct rename_event_t event = {
@@ -118,8 +133,6 @@ int __attribute__((always_inline)) trace__sys_rename_ret(struct pt_regs *ctx) {
 
         send_event(ctx, event);
     }
-
-    invalidate_inode(ctx, syscall->rename.target_key.mount_id, syscall->rename.target_key.ino, !enabled);
 
     return 0;
 }

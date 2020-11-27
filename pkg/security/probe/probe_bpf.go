@@ -848,9 +848,42 @@ func filenameDiscarderWrapper(eventType EventType, handler onDiscarderHandler, g
 	}
 }
 
+func onNewBasenameApproversWrapper(event EventType) onApproverHandler {
+	return func(probe *Probe, approvers rules.Approvers) (activeApprovers, error) {
+		basenameApprovers, err := onNewBasenameApprovers(probe, event, "", approvers)
+		if err != nil {
+			return nil, err
+		}
+		return newActiveKFilters(basenameApprovers...), nil
+	}
+}
+
+func onNewTwoBasenamesApproversWrapper(event EventType, field1, field2 string) onApproverHandler {
+	return func(probe *Probe, approvers rules.Approvers) (activeApprovers, error) {
+		basenameApprovers, err := onNewBasenameApprovers(probe, event, field1, approvers)
+		if err != nil {
+			return nil, err
+		}
+		basenameApprovers2, err := onNewBasenameApprovers(probe, event, field2, approvers)
+		if err != nil {
+			return nil, err
+		}
+		basenameApprovers = append(basenameApprovers, basenameApprovers2...)
+		return newActiveKFilters(basenameApprovers...), nil
+	}
+}
+
 func init() {
 	// approvers
+	allApproversHandlers["chmod"] = onNewBasenameApproversWrapper(FileChmodEventType)
+	allApproversHandlers["chown"] = onNewBasenameApproversWrapper(FileChownEventType)
+	allApproversHandlers["link"] = onNewTwoBasenamesApproversWrapper(FileLinkEventType, "source", "target")
+	allApproversHandlers["mkdir"] = onNewBasenameApproversWrapper(FileMkdirEventType)
 	allApproversHandlers["open"] = openOnNewApprovers
+	allApproversHandlers["rename"] = onNewTwoBasenamesApproversWrapper(FileRenameEventType, "old", "new")
+	allApproversHandlers["rmdir"] = onNewBasenameApproversWrapper(FileRmdirEventType)
+	allApproversHandlers["unlink"] = onNewBasenameApproversWrapper(FileUnlinkEventType)
+	allApproversHandlers["utimes"] = onNewBasenameApproversWrapper(FileUtimeEventType)
 
 	// discarders
 	SupportedDiscarders["process.filename"] = true
