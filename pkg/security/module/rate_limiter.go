@@ -121,12 +121,12 @@ func (rl *RateLimiter) SendStats(client *statsd.Client) error {
 	for ruleID, counts := range rl.GetStats() {
 		tags := []string{fmt.Sprintf("rule_id:%s", ruleID)}
 		if counts.dropped > 0 {
-			if err := client.Count(probe.MetricPrefix+".rules.rate_limiter.drop", counts.dropped, tags, 1.0); err != nil {
+			if err := client.Count(probe.MetricRateLimiterDrop, counts.dropped, tags, 1.0); err != nil {
 				return err
 			}
 		}
 		if counts.allowed > 0 {
-			if err := client.Count(probe.MetricPrefix+".rules.rate_limiter.allow", counts.allowed, tags, 1.0); err != nil {
+			if err := client.Count(probe.MetricRateLimiterAllow, counts.allowed, tags, 1.0); err != nil {
 				return err
 			}
 		}

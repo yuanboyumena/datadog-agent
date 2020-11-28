@@ -84,7 +84,7 @@ func (e *EventServer) SendEvent(rule *eval.Rule, event Event) {
 		return
 	}
 	tags := append(rule.Tags, "rule_id:"+rule.ID)
-	tags = append(tags, event.(*sprobe.Event).GetTags()...)
+	tags = append(tags, event.GetTags()...)
 	log.Tracef("Sending event message for rule `%s` to security-agent `%s` with tags %v", rule.ID, string(data), tags)
 
 	msg := &api.SecurityEventMessage{
@@ -145,7 +145,7 @@ func (e *EventServer) SendStats(client *statsd.Client) error {
 	for ruleID, val := range e.GetStats() {
 		tags := []string{fmt.Sprintf("rule_id:%s", ruleID)}
 		if val > 0 {
-			if err := client.Count(sprobe.MetricPrefix+".rules.event_server.expired", val, tags, 1.0); err != nil {
+			if err := client.Count(sprobe.MetricEventServerExpired, val, tags, 1.0); err != nil {
 				return err
 			}
 		}
