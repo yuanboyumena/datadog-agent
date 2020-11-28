@@ -1062,7 +1062,7 @@ func (p *ProcessContext) marshalJSON(event *Event) ([]byte, error) {
 	entry := event.ResolveProcessCacheEntry()
 	if entry != nil {
 		// add top level cache entry
-		d, err := entry.marshalJSON(event.resolvers, true)
+		d, err := entry.marshalJSON(true)
 		if err != nil {
 			return nil, err
 		}
@@ -1072,7 +1072,7 @@ func (p *ProcessContext) marshalJSON(event *Event) ([]byte, error) {
 		fmt.Fprint(&buf, `,"ancestors":[`)
 		ancestorTmp := entry.Parent
 		for ancestorTmp != nil && len(ancestorTmp.PathnameStr) > 0 {
-			d, err := ancestorTmp.marshalJSON(event.resolvers, false)
+			d, err := ancestorTmp.marshalJSON(false)
 			if err != nil {
 				return nil, err
 			}

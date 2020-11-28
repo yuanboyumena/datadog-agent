@@ -12,6 +12,7 @@ import (
 	"math"
 	"runtime"
 	"sync/atomic"
+	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
 	lib "github.com/DataDog/ebpf"
@@ -410,7 +411,7 @@ func (pbm *PerfBufferMonitor) sendLostEventsReadStats(client *statsd.Client) err
 
 		if total > 0 && !pbm.probe.config.PerfBufferMonitor {
 			pbm.probe.DispatchCustomEvent(
-				NewEventLostReadEvent(m, perCPU),
+				NewEventLostReadEvent(m, perCPU, time.Now()),
 			)
 		}
 	}
@@ -480,7 +481,7 @@ func (pbm *PerfBufferMonitor) collectAndSendKernelStats(client *statsd.Client) e
 		// send an alert if events were lost
 		if total > 0 {
 			pbm.probe.DispatchCustomEvent(
-				NewEventLostWriteEvent(perfMapName, perEventPerCPU),
+				NewEventLostWriteEvent(perfMapName, perEventPerCPU, time.Now()),
 			)
 		}
 	}

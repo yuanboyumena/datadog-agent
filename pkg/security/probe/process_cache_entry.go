@@ -80,7 +80,41 @@ func (pc *ProcessCacheEntry) UnmarshalBinary(data []byte, resolvers *Resolvers, 
 	return read + offset, nil
 }
 
-func (pc *ProcessCacheEntry) marshalJSON(resolvers *Resolvers, topLevelProcess bool) ([]byte, error) {
+// MarshalJSON returns the JSON representation of the ProcessCacheEntry
+func (pc *ProcessCacheEntry) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteRune('{')
+
+	// Add top level process data
+	d, err := pc.marshalJSON(false)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(d)
+
+	// add ancestors data
+	fmt.Fprint(&buf, `,"ancestors":[`)
+	ancestorTmp := pc.Parent
+	for ancestorTmp != nil && len(ancestorTmp.PathnameStr) > 0 {
+		d, err := ancestorTmp.marshalJSON(false)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteRune('{')
+		buf.Write(d)
+		buf.WriteRune('}')
+		ancestorTmp = ancestorTmp.Parent
+		if ancestorTmp != nil && len(ancestorTmp.PathnameStr) > 0 {
+			buf.WriteRune(',')
+		}
+	}
+	buf.WriteRune(']')
+
+	buf.WriteRune('}')
+	return buf.Bytes(), nil
+}
+
+func (pc *ProcessCacheEntry) marshalJSON(topLevelProcess bool) ([]byte, error) {
 	var buf bytes.Buffer
 
 	if !topLevelProcess {
