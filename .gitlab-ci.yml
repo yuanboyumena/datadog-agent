@@ -393,8 +393,7 @@ tests_ebpf:
     - cp ./pkg/ebpf/bytecode/build/offset-guess-debug.o $CI_PROJECT_DIR/.tmp/binary-ebpf/offset-guess-debug.o
   tags: [ "runner:main", "size:large" ]
   script:
-    # For now only check bpf bytes since we don't have a way to run eBPF tests without mounting a debugfs
-    - CGO_CFLAGS='-I/opt/libbcc/include' CGO_LDFLAGS='-Wl,-rpath,/opt/libbcc/lib -L/opt/libbcc/lib' inv -e system-probe.test --only-check-bpf-bytes
+    - CGO_CFLAGS='-I/opt/libbcc/include' CGO_LDFLAGS='-Wl,-rpath,/opt/libbcc/lib -L/opt/libbcc/lib' inv -e system-probe.object-files
     # Compile runtime security functional tests to be executed in kitchen tests
     - inv -e security-agent.functional-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/testsuite
 
@@ -700,7 +699,6 @@ dogstatsd_arm64_size_test:
 
   script:
     - inv -e system-probe.build --go-version=$SYSTEM_PROBE_GO_VERSION --embedded-path=$DATADOG_AGENT_EMBEDDED_PATH
-    - inv -e system-probe.test --only-check-bpf-bytes
     - $S3_CP_CMD $SRC_PATH/$SYSTEM_PROBE_BINARIES_DIR/system-probe $S3_ARTIFACTS_URI/system-probe.$ARCH
     - $S3_CP_CMD $SRC_PATH/pkg/ebpf/bytecode/build/tracer-ebpf.o $S3_ARTIFACTS_URI/tracer-ebpf.o.$ARCH
     - $S3_CP_CMD $SRC_PATH/pkg/ebpf/bytecode/build/tracer-ebpf-debug.o $S3_ARTIFACTS_URI/tracer-ebpf-debug.o.$ARCH

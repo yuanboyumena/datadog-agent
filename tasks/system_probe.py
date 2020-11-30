@@ -170,7 +170,7 @@ def build_in_docker(
 
 
 @task
-def test(ctx, skip_object_files=False, only_check_bpf_bytes=False, bundle_ebpf=True):
+def test(ctx, skip_object_files=False, bundle_ebpf=True):
     """
     Run tests on eBPF parts
     If skip_object_files is set to True, this won't rebuild object files
@@ -193,15 +193,11 @@ def test(ctx, skip_object_files=False, only_check_bpf_bytes=False, bundle_ebpf=T
     bpf_tag = BPF_TAG
     # temporary measure until we have a good default for BPFDir for testing
     bpf_tag += ",ebpf_bindata"
-    if only_check_bpf_bytes:
-        # bpf_tag += ",ebpf_bindata"
-        cmd += " -run=TestEbpfBytesCorrect"
-    else:
-        if os.getenv("GOPATH") is None:
-            print(
-                "GOPATH is not set, if you are running tests with sudo, you may need to use the -E option to preserve your environment"
-            )
-            raise Exit(code=1)
+    if os.getenv("GOPATH") is None:
+        print(
+            "GOPATH is not set, if you are running tests with sudo, you may need to use the -E option to preserve your environment"
+        )
+        raise Exit(code=1)
 
     ctx.run(cmd.format(path=path, go_mod="vendor", bpf_tag=bpf_tag, pkg=pkg))
 
