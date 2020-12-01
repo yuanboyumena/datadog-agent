@@ -400,7 +400,10 @@ tests_ebpf:
     - inv -e system-probe.test --only-check-bpf-bytes
     # Compile runtime security functional tests to be executed in kitchen tests
     - inv -e security-agent.functional-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/testsuite
-    - inv -e system-probe.kitchen-prepare
+    # Compile runtime security stress tests to be executed in kitchen tests
+    - inv -e security-agent.stress-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/stresssuite
+    - git checkout origin/master -b security-agent-stress-tests
+    - inv -e security-agent.stress-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/stresssuite-master
 
   artifacts:
     when: always
@@ -2019,6 +2022,22 @@ deploy_windows_testing-a7:
     DD_PIPELINE_ID: $CI_PIPELINE_ID-a7
   stage: functional_test
 
+.kitchen_stress_security_agent:
+  script:
+    - bash -l tasks/run-test-kitchen.sh security-agent-stress $AGENT_MAJOR_VERSION
+  extends:
+    - .kitchen_datadog_agent_flavor
+    - .kitchen_azure_location_north_central_us
+  <<: *kitchen_common
+  rules:
+    - when: manual
+      allow_failure: true
+  needs: [  "tests_ebpf" ]
+  variables:
+    AGENT_MAJOR_VERSION: 7
+    DD_PIPELINE_ID: $CI_PIPELINE_ID-a7
+  stage: functional_test
+
 .kitchen_test_system_probe:
   script:
     - bash -l tasks/run-test-kitchen.sh system-probe-test $AGENT_MAJOR_VERSION
@@ -2371,6 +2390,15 @@ sysprobe_ubuntu:
     - bash -l tasks/kitchen_setup.sh
   extends:
     - .kitchen_test_system_probe
+
+kitchen_ubuntu_security_agent_stress:
+  before_script:
+    - rsync -azr --delete ./ $SRC_PATH
+    - export TEST_PLATFORMS="ubuntu-18-04,urn,Canonical:UbuntuServer:18.04-LTS:18.04.201906040"
+    - cd $DD_AGENT_TESTING_DIR
+    - bash -l tasks/kitchen_setup.sh
+  extends:
+    - .kitchen_stress_security_agent
 
 # SUSE kitchen tests
 
