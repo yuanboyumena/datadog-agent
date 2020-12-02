@@ -402,8 +402,10 @@ tests_ebpf:
     - inv -e security-agent.functional-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/testsuite
     # Compile runtime security stress tests to be executed in kitchen tests
     - inv -e security-agent.stress-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/stresssuite
-    - git checkout origin/master -b security-agent-stress-tests
-    - inv -e security-agent.stress-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/stresssuite-master
+    # Compile against master to have a comparison reference, uncomment following line after PR merged
+    #- git checkout origin/master -b security-agent-stress-tests
+    - inv -e security-agent.stress-tests --output=$DD_AGENT_TESTING_DIR/site-cookbooks/dd-security-agent-check/files/stresssuite-master || true
+    #- git checkout -
 
   artifacts:
     when: always
@@ -2270,7 +2272,7 @@ kitchen_centos_upgrade7_iot_agent-a7:
     - .kitchen_scenario_centos_a7
     - .kitchen_test_upgrade7_iot_agent
 
-kitchen_centos_security_agent:
+secagent_centos:
   before_script:
     - rsync -azr --delete ./ $SRC_PATH
     - export TEST_PLATFORMS="centos-77,urn,OpenLogic:CentOS:7.7:7.7.201912090"
@@ -2369,7 +2371,7 @@ kitchen_ubuntu_upgrade7_iot_agent-a7:
     - .kitchen_scenario_ubuntu_a7
     - .kitchen_test_upgrade7_iot_agent
 
-kitchen_ubuntu_security_agent:
+secagent_ubuntu:
   before_script:
     - rsync -azr --delete ./ $SRC_PATH
     - export TEST_PLATFORMS="ubuntu-18-04,urn,Canonical:UbuntuServer:18.04-LTS:18.04.201906040"
@@ -2391,7 +2393,7 @@ sysprobe_ubuntu:
   extends:
     - .kitchen_test_system_probe
 
-kitchen_ubuntu_security_agent_stress:
+secagent_stress:
   before_script:
     - rsync -azr --delete ./ $SRC_PATH
     - export TEST_PLATFORMS="ubuntu-18-04,urn,Canonical:UbuntuServer:18.04-LTS:18.04.201906040"
@@ -2478,7 +2480,7 @@ kitchen_suse_upgrade7_iot_agent-a7:
     - .kitchen_scenario_suse_a7
     - .kitchen_test_upgrade7_iot_agent
 
-kitchen_suse_security_agent:
+secagent_suse:
   extends:
     - .kitchen_os_suse
     - .kitchen_test_security_agent
@@ -2562,7 +2564,7 @@ kitchen_debian_upgrade7_iot_agent-a7:
     - .kitchen_scenario_debian_a7
     - .kitchen_test_upgrade7_iot_agent
 
-kitchen_debian_security_agent:
+secagent_debian:
   before_script:
     - rsync -azr --delete ./ $SRC_PATH
     - export TEST_PLATFORMS="debian-10,urn,Debian:debian-10:10:0.20200610.293"
