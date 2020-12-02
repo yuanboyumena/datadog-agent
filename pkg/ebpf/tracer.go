@@ -3,7 +3,6 @@
 package ebpf
 
 import (
-	"bytes"
 	"expvar"
 	"fmt"
 	"math"
@@ -12,14 +11,15 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/DataDog/datadog-agent/pkg/ebpf/bytecode"
 	"github.com/DataDog/datadog-agent/pkg/network"
 	"github.com/DataDog/datadog-agent/pkg/network/netlink"
-	"github.com/DataDog/datadog-agent/pkg/process/util"
+	"github.com/DataDog/datadog-agent/pkg/util/kernel"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/ebpf"
 	"github.com/DataDog/ebpf/manager"
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -50,6 +50,8 @@ type Tracer struct {
 	perfMap      *manager.PerfMap
 	perfHandler  *bytecode.PerfHandler
 	batchManager *PerfBatchManager
+	flushIdle    chan chan struct{}
+	stop         chan struct{}
 
 	// Telemetry
 	perfReceived  int64
@@ -75,11 +77,13 @@ type Tracer struct {
 	bufferLock sync.Mutex
 
 	// Internal buffer used to compute bytekeys
-	buf *bytes.Buffer
+	buf [network.ConnectionByteKeyMaxLen]byte
 
 	// Connections for the tracer to blacklist
 	sourceExcludes []*network.ConnectionFilter
 	destExcludes   []*network.ConnectionFilter
+
+	conntrack *cachedConntrack
 }
 
 const (
@@ -88,8 +92,8 @@ const (
 
 func NewTracer(config *Config) (*Tracer, error) {
 	// make sure debugfs is mounted
-	if mounted, msg := util.IsDebugfsMounted(); !mounted {
-		return nil, fmt.Errorf("%s: %s", "system-probe unsupported", msg)
+	if mounted, err := kernel.IsDebugFSMounted(); !mounted {
+		return nil, fmt.Errorf("%s: %s", "system-probe unsupported", err)
 	}
 
 	buf, err := bytecode.ReadBPFModule(config.BPFDir, config.BPFDebug)
@@ -102,16 +106,16 @@ func NewTracer(config *Config) (*Tracer, error) {
 	}
 
 	// check if current platform is using old kernel API because it affects what kprobe are we going to enable
-	currKernelVersion, err := ebpf.CurrentKernelVersion()
+	currKernelVersion, err := kernel.HostVersion()
 	if err != nil {
 		// if the platform couldn't be determined, treat it as new kernel case
 		log.Warn("could not detect the platform, will use kprobes from kernel version >= 4.1.0")
 	}
 
 	// check to see if current kernel is earlier than version 4.1.0
-	pre410Kernel := isPre410Kernel(currKernelVersion)
+	pre410Kernel := currKernelVersion < kernel.VersionCode(4, 1, 0)
 	if pre410Kernel {
-		log.Infof("detected platform %s, switch to use kprobes from kernel version < 4.1.0", kernelCodeToString(currKernelVersion))
+		log.Infof("detected platform %s, switch to use kprobes from kernel version < 4.1.0", currKernelVersion)
 	}
 
 	mgrOptions := manager.Options{
@@ -164,18 +168,22 @@ func NewTracer(config *Config) (*Tracer, error) {
 	// exclude all non-enabled probes to ensure we don't run into problems with unsupported probe types
 	for _, p := range m.Probes {
 		if _, enabled := enabledProbes[bytecode.ProbeName(p.Section)]; !enabled {
-			mgrOptions.ExcludedProbes = append(mgrOptions.ExcludedProbes, p.Section)
+			mgrOptions.ExcludedSections = append(mgrOptions.ExcludedSections, p.Section)
 		}
 	}
 	for probeName := range enabledProbes {
-		mgrOptions.ActivatedProbes = append(mgrOptions.ActivatedProbes, string(probeName))
+		mgrOptions.ActivatedProbes = append(
+			mgrOptions.ActivatedProbes,
+			&manager.ProbeSelector{
+				ProbeIdentificationPair: manager.ProbeIdentificationPair{
+					Section: string(probeName),
+				},
+			})
 	}
 	err = m.InitWithOptions(buf, mgrOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init ebpf manager: %v", err)
 	}
-
-	overrideProbeSectionNames(m)
 
 	reverseDNS := network.NewNullReverseDNS()
 	if enableSocketFilter {
@@ -209,7 +217,7 @@ func NewTracer(config *Config) (*Tracer, error) {
 
 	conntracker := netlink.NewNoOpConntracker()
 	if config.EnableConntrack {
-		if c, err := netlink.NewConntracker(config.ProcRoot, config.ConntrackMaxStateSize, config.ConntrackRateLimit); err != nil {
+		if c, err := netlink.NewConntracker(config.ProcRoot, config.ConntrackMaxStateSize, config.ConntrackRateLimit, config.EnableConntrackAllNamespaces); err != nil {
 			log.Warnf("could not initialize conntrack, tracer will continue without NAT tracking: %s", err)
 		} else {
 			conntracker = c
@@ -231,11 +239,13 @@ func NewTracer(config *Config) (*Tracer, error) {
 		udpPortMapping: udpPortMapping,
 		reverseDNS:     reverseDNS,
 		buffer:         make([]network.ConnectionStats, 0, 512),
-		buf:            &bytes.Buffer{},
 		conntracker:    conntracker,
 		sourceExcludes: network.ParseConnectionFilters(config.ExcludedSourceConnections),
 		destExcludes:   network.ParseConnectionFilters(config.ExcludedDestinationConnections),
 		perfHandler:    perfHandler,
+		flushIdle:      make(chan chan struct{}),
+		stop:           make(chan struct{}),
+		conntrack:      newCachedConntrack(config.ProcRoot, netlink.NewConntrack, 128),
 	}
 
 	tr.perfMap, tr.batchManager, err = tr.initPerfPolling(perfHandler)
@@ -252,17 +262,6 @@ func NewTracer(config *Config) (*Tracer, error) {
 	return tr, nil
 }
 
-func overrideProbeSectionNames(m *manager.Manager) {
-	for _, p := range m.Probes {
-		if !p.Enabled {
-			continue
-		}
-		if override, ok := bytecode.KProbeOverrides[bytecode.ProbeName(p.Section)]; ok {
-			p.Section = string(override)
-		}
-	}
-}
-
 func runOffsetGuessing(config *Config, buf bytecode.AssetReader) ([]manager.ConstantEditor, error) {
 	// Enable kernel probes used for offset guessing.
 	offsetMgr := bytecode.NewOffsetManager()
@@ -275,11 +274,17 @@ func runOffsetGuessing(config *Config, buf bytecode.AssetReader) ([]manager.Cons
 	enabledProbes := offsetGuessProbes(config)
 	for _, p := range offsetMgr.Probes {
 		if _, enabled := enabledProbes[bytecode.ProbeName(p.Section)]; !enabled {
-			offsetOptions.ExcludedProbes = append(offsetOptions.ExcludedProbes, p.Section)
+			offsetOptions.ExcludedSections = append(offsetOptions.ExcludedSections, p.Section)
 		}
 	}
 	for probeName := range enabledProbes {
-		offsetOptions.ActivatedProbes = append(offsetOptions.ActivatedProbes, string(probeName))
+		offsetOptions.ActivatedProbes = append(
+			offsetOptions.ActivatedProbes,
+			&manager.ProbeSelector{
+				ProbeIdentificationPair: manager.ProbeIdentificationPair{
+					Section: string(probeName),
+				},
+			})
 	}
 	if err := offsetMgr.InitWithOptions(buf, offsetOptions); err != nil {
 		return nil, fmt.Errorf("could not load bpf module for offset guessing: %s", err)
@@ -297,7 +302,7 @@ func runOffsetGuessing(config *Config, buf bytecode.AssetReader) ([]manager.Cons
 	start := time.Now()
 	editors, err := guessOffsets(offsetMgr, config)
 	if err != nil {
-		return nil, fmt.Errorf("error guessing offsets: %v", err)
+		return nil, err
 	}
 	log.Infof("socket struct offset guessing complete (took %v)", time.Since(start))
 	return editors, nil
@@ -305,21 +310,34 @@ func runOffsetGuessing(config *Config, buf bytecode.AssetReader) ([]manager.Cons
 
 func (t *Tracer) expvarStats() {
 	ticker := time.NewTicker(5 * time.Second)
-	// starts running the body immediately instead waiting for the first tick
-	for ; true; <-ticker.C {
-		stats, err := t.getTelemetry()
-		if err != nil {
-			continue
-		}
+	defer ticker.Stop()
 
-		for name, stat := range stats {
-			for metric, val := range stat.(map[string]int64) {
-				currVal := &expvar.Int{}
-				currVal.Set(val)
-				expvarEndpoints[name].Set(snakeToCapInitialCamel(metric), currVal)
-			}
+	// trigger first get immediately
+	_ = t.populateExpvarStats()
+	for {
+		select {
+		case <-t.stop:
+			return
+		case <-ticker.C:
+			_ = t.populateExpvarStats()
 		}
 	}
+}
+
+func (t *Tracer) populateExpvarStats() error {
+	stats, err := t.getTelemetry()
+	if err != nil {
+		return err
+	}
+
+	for name, stat := range stats {
+		for metric, val := range stat.(map[string]int64) {
+			currVal := &expvar.Int{}
+			currVal.Set(val)
+			expvarEndpoints[name].Set(snakeToCapInitialCamel(metric), currVal)
+		}
+	}
+	return nil
 }
 
 // initPerfPolling starts the listening on perf buffer events to grab closed connections
@@ -344,8 +362,6 @@ func (t *Tracer) initPerfPolling(perf *bytecode.PerfHandler) (*manager.PerfMap, 
 	go func() {
 		// Stats about how much connections have been closed / lost
 		ticker := time.NewTicker(5 * time.Minute)
-		flushIdle := time.NewTicker(t.config.TCPClosedTimeout)
-
 		for {
 			select {
 			case batchData, ok := <-perf.ClosedChannel:
@@ -364,11 +380,15 @@ func (t *Tracer) initPerfPolling(perf *bytecode.PerfHandler) (*manager.PerfMap, 
 					return
 				}
 				atomic.AddInt64(&t.perfLost, int64(lostCount))
-			case now := <-flushIdle.C:
-				idleConns := t.batchManager.GetIdleConns(now)
+			case done, ok := <-t.flushIdle:
+				if !ok {
+					return
+				}
+				idleConns := t.batchManager.GetIdleConns(time.Now())
 				for _, c := range idleConns {
 					t.storeClosedConn(c)
 				}
+				close(done)
 			case <-ticker.C:
 				recv := atomic.SwapInt64(&t.perfReceived, 0)
 				lost := atomic.SwapInt64(&t.perfLost, 0)
@@ -405,18 +425,21 @@ func (t *Tracer) storeClosedConn(cs network.ConnectionStats) {
 
 	atomic.AddInt64(&t.closedConns, 1)
 	cs.IPTranslation = t.conntracker.GetTranslationForConn(cs)
-	t.state.StoreClosedConnection(cs)
+	t.state.StoreClosedConnection(&cs)
 	if cs.IPTranslation != nil {
 		t.conntracker.DeleteTranslation(cs)
 	}
 }
 
 func (t *Tracer) Stop() {
+	close(t.stop)
 	t.reverseDNS.Close()
 	_ = t.m.Stop(manager.CleanAll)
 	_ = t.perfMap.Stop(manager.CleanAll)
 	t.perfHandler.Stop()
+	close(t.flushIdle)
 	t.conntracker.Close()
+	t.conntrack.Close()
 }
 
 func (t *Tracer) GetActiveConnections(clientID string) (*network.Connections, error) {
@@ -434,6 +457,11 @@ func (t *Tracer) GetActiveConnections(clientID string) (*network.Connections, er
 	} else if len(latestConns) <= cap(t.buffer)/2 {
 		t.buffer = make([]network.ConnectionStats, 0, cap(t.buffer)/2)
 	}
+
+	// Ensure that TCP closed connections are flushed
+	done := make(chan struct{})
+	t.flushIdle <- done
+	<-done
 
 	conns := t.state.Connections(clientID, latestTime, latestConns, t.reverseDNS.GetDNSStats())
 	names := t.reverseDNS.Resolve(conns)
@@ -457,6 +485,9 @@ func (t *Tracer) getConnTelemetry(mapSize int) *network.ConnectionsTelemetry {
 	}
 	if rtd, ok := conntrackStats["registers_dropped"]; ok {
 		tm.MonotonicConntrackRegistersDropped = rtd
+	}
+	if sp, ok := conntrackStats["sampling_pct"]; ok {
+		tm.ConntrackSamplingPercent = sp
 	}
 
 	dnsStats := t.reverseDNS.GetStats()
@@ -521,9 +552,9 @@ func (t *Tracer) getConnections(active []network.ConnectionStats) ([]network.Con
 	key, stats := &ConnTuple{}, &ConnStatsWithTimestamp{}
 	seen := make(map[ConnTuple]struct{})
 	var expired []*ConnTuple
-	entries := mp.Iterate()
+	entries := mp.IterateFrom(unsafe.Pointer(&ConnTuple{}))
 	for entries.Next(unsafe.Pointer(key), unsafe.Pointer(stats)) {
-		if stats.isExpired(latestTime, t.timeoutForConn(key)) {
+		if stats.isExpired(latestTime, t.timeoutForConn(key)) && !t.conntrackExists(key) {
 			expired = append(expired, key.copy())
 			if key.isTCP() {
 				atomic.AddInt64(&t.expiredTCPConns, 1)
@@ -554,12 +585,14 @@ func (t *Tracer) getConnections(active []network.ConnectionStats) ([]network.Con
 	t.state.RemoveExpiredClients(time.Now())
 
 	for _, key := range closedPortBindings {
-		t.portMapping.RemoveMapping(key)
+		port := uint16(key.port)
+		t.portMapping.RemoveMapping(uint64(key.net_ns), port)
 		_ = portMp.Delete(unsafe.Pointer(&key))
 	}
 
 	for _, key := range closedUDPPortBindings {
-		t.udpPortMapping.RemoveMapping(key)
+		port := uint16(key.port)
+		t.udpPortMapping.RemoveMapping(uint64(key.net_ns), port)
 		_ = udpPortMp.Delete(unsafe.Pointer(&key))
 	}
 
@@ -753,38 +786,33 @@ func (t *Tracer) DebugNetworkMaps() (*network.Connections, error) {
 // closed ports will be returned.
 // the map will be one of port_bindings  or udp_port_bindings, and the mapping will be one of tracer#portMapping
 // tracer#udpPortMapping respectively.
-func (t *Tracer) populatePortMapping(mp *ebpf.Map, mapping *network.PortMapping) ([]uint16, error) {
-	var key uint16
+func (t *Tracer) populatePortMapping(mp *ebpf.Map, mapping *network.PortMapping) (closed []portBindingTuple, err error) {
+	var key, emptyKey portBindingTuple
 	var state uint8
 
-	closedPortBindings := make([]uint16, 0)
-
-	entries := mp.Iterate()
+	entries := mp.IterateFrom(unsafe.Pointer(&emptyKey))
 	for entries.Next(unsafe.Pointer(&key), unsafe.Pointer(&state)) {
-		port := key
-
-		mapping.AddMapping(port)
-
+		log.Tracef("port mapping added port=%d net_ns=%d", key.port, key.net_ns)
+		mapping.AddMapping(uint64(key.net_ns), uint16(key.port))
 		if isPortClosed(state) {
-			closedPortBindings = append(closedPortBindings, port)
+			log.Tracef("port mapping closed port=%d net_ns=%d", key.port, key.net_ns)
+			closed = append(closed, key)
 		}
 	}
 
-	return closedPortBindings, nil
+	return closed, nil
 }
 
 func (t *Tracer) determineConnectionDirection(conn *network.ConnectionStats) network.ConnectionDirection {
+	pm := t.portMapping
+	netNs := uint64(conn.NetNS)
 	if conn.Type == network.UDP {
-		if t.udpPortMapping.IsListening(conn.SPort) {
-			return network.INCOMING
-		}
-		return network.OUTGOING
+		pm = t.udpPortMapping
+		netNs = 0 // namespace is always 0 for udp since we can't get namespace info from ebpf
 	}
-
-	if t.portMapping.IsListening(conn.SPort) {
+	if pm.IsListening(netNs, conn.SPort) {
 		return network.INCOMING
 	}
-
 	return network.OUTGOING
 }
 
@@ -806,4 +834,13 @@ func (t *Tracer) getProbeProgramIDs() (map[string]uint32, error) {
 		fds[p.Section] = uint32(id)
 	}
 	return fds, nil
+}
+
+func (t *Tracer) conntrackExists(conn *ConnTuple) bool {
+	ok, err := t.conntrack.Exists(conn)
+	if err != nil {
+		log.Errorf("error checking conntrack for connection %+v", *conn)
+	}
+
+	return ok
 }

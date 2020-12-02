@@ -83,7 +83,7 @@ func TestReceiverRequestBodyLength(t *testing.T) {
 	// Before going further, make sure receiver is started
 	// since it's running in another goroutine
 	for i := 0; i < 10; i++ {
-		client := &http.Client{}
+		var client http.Client
 
 		body := bytes.NewBufferString("[]")
 		req, err := http.NewRequest("POST", url, body)
@@ -97,7 +97,7 @@ func TestReceiverRequestBodyLength(t *testing.T) {
 	}
 
 	testBody := func(expectedStatus int, bodyData string) {
-		client := &http.Client{}
+		var client http.Client
 
 		body := bytes.NewBufferString(bodyData)
 		req, err := http.NewRequest("POST", url, body)
@@ -141,7 +141,7 @@ func TestLegacyReceiver(t *testing.T) {
 			assert.Nil(err)
 			req.Header.Set("Content-Type", tc.contentType)
 
-			client := &http.Client{}
+			var client http.Client
 			resp, err := client.Do(req)
 			assert.Nil(err)
 			assert.Equal(200, resp.StatusCode)
@@ -206,7 +206,7 @@ func TestReceiverJSONDecoder(t *testing.T) {
 			assert.Nil(err)
 			req.Header.Set("Content-Type", tc.contentType)
 
-			client := &http.Client{}
+			var client http.Client
 			resp, err := client.Do(req)
 			assert.Nil(err)
 			assert.Equal(200, resp.StatusCode)
@@ -267,7 +267,7 @@ func TestReceiverMsgpackDecoder(t *testing.T) {
 			assert.Nil(err)
 			req.Header.Set("Content-Type", tc.contentType)
 
-			client := &http.Client{}
+			var client http.Client
 			resp, err := client.Do(req)
 			assert.Nil(err)
 
@@ -339,7 +339,7 @@ func TestReceiverDecodingError(t *testing.T) {
 	r := newTestReceiverFromConfig(conf)
 	server := httptest.NewServer(http.HandlerFunc(r.handleWithVersion(v04, r.handleTraces)))
 	data := []byte("} invalid json")
-	client := &http.Client{}
+	var client http.Client
 
 	t.Run("no-header", func(t *testing.T) {
 		req, err := http.NewRequest("POST", server.URL, bytes.NewBuffer(data))
@@ -348,7 +348,6 @@ func TestReceiverDecodingError(t *testing.T) {
 
 		resp, err := client.Do(req)
 		assert.NoError(err)
-
 		assert.Equal(400, resp.StatusCode)
 		assert.EqualValues(0, r.Stats.GetTagStats(info.Tags{EndpointVersion: "v0.4"}).TracesDropped.DecodingError)
 	})
@@ -362,10 +361,38 @@ func TestReceiverDecodingError(t *testing.T) {
 
 		resp, err := client.Do(req)
 		assert.NoError(err)
-
 		assert.Equal(400, resp.StatusCode)
 		assert.EqualValues(traceCount, r.Stats.GetTagStats(info.Tags{EndpointVersion: "v0.4"}).TracesDropped.DecodingError)
 	})
+}
+
+func TestReceiverUnexpectedEOF(t *testing.T) {
+	assert := assert.New(t)
+	conf := newTestReceiverConfig()
+	r := newTestReceiverFromConfig(conf)
+	server := httptest.NewServer(http.HandlerFunc(r.handleWithVersion(v05, r.handleTraces)))
+	var client http.Client
+	traceCount := 2
+
+	// we get to read the header and the entire dictionary, but the Content-Length claims
+	// to be much larger
+	data := []byte{
+		0x92,                    // Short array with 2 elements
+		0x91,                    // Short array with 1 element
+		0xA5,                    // Short string with 5 elements
+		'a', 'b', 'c', 'd', 'e', // bytes
+	}
+	req, err := http.NewRequest("POST", server.URL, bytes.NewBuffer(data))
+	assert.NoError(err)
+	req.Header.Set("Content-Type", "application/msgpack")
+	req.Header.Set("Content-Length", "270")
+	req.Header.Set(headerTraceCount, strconv.Itoa(traceCount))
+
+	resp, err := client.Do(req)
+	assert.NoError(err)
+
+	assert.Equal(400, resp.StatusCode)
+	assert.EqualValues(traceCount, r.Stats.GetTagStats(info.Tags{EndpointVersion: "v0.5"}).TracesDropped.EOF)
 }
 
 func TestTraceCount(t *testing.T) {
@@ -540,6 +567,54 @@ func (sr *chunkedReader) Read(p []byte) (n int, err error) {
 	}
 	buf := p[0:size]
 	return sr.reader.Read(buf)
+}
+
+func TestClientComputedTopLevel(t *testing.T) {
+	conf := newTestReceiverConfig()
+	rcv := newTestReceiverFromConfig(conf)
+	rcv.Start()
+	defer rcv.Stop()
+
+	// run runs the test with ClientComputedStats turned on.
+	run := func(on bool) func(t *testing.T) {
+		return func(t *testing.T) {
+			var buf bytes.Buffer
+			msgp.Encode(&buf, testutil.GetTestTraces(10, 10, true))
+
+			req, _ := http.NewRequest("POST", "http://127.0.0.1:8126/v0.4/traces", &buf)
+			req.Header.Set("Content-Type", "application/msgpack")
+			req.Header.Set(headerLang, "lang1")
+			if on {
+				req.Header.Set(headerComputedTopLevel, "yes")
+			}
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != 200 {
+					t.Fatal(resp.StatusCode)
+				}
+			}()
+			timeout := time.After(time.Second)
+			for {
+				select {
+				case p := <-rcv.out:
+					assert.Equal(t, p.ClientComputedTopLevel, on)
+					wg.Wait()
+					return
+				case <-timeout:
+					t.Fatal("no output")
+				}
+			}
+		}
+	}
+
+	t.Run("on", run(true))
+	t.Run("off", run(false))
 }
 
 func TestReceiverRateLimiterCancel(t *testing.T) {

@@ -261,7 +261,7 @@ func parseFile(filename string, pkgName string) (*Module, error) {
 
 	program, err = conf.Load()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load %s(%s): %s", filename, pkgName, err)
+		return nil, fmt.Errorf("Failed to load %s (%s): %s", filename, pkgName, err)
 	}
 
 	packages = make(map[string]*types.Package, len(program.AllPackages))
@@ -327,7 +327,7 @@ func (m *Model) GetEvaluator(field eval.Field) (eval.Evaluator, error) {
 	{{range $Name, $Field := .Fields}}
 	{{$Return := $Field.Name | printf "(*Event)(ctx.Object).%s"}}
 	{{if ne $Field.Handler ""}}
-		{{$Return = $Field.Handler | printf "(*Event)(ctx.Object).%s((*Event)(ctx.Object).resolvers)"}}
+		{{$Return = $Field.Handler | printf "(*Event)(ctx.Object).%s((*Event)(ctx.Object))"}}
 	{{end}}
 
 	case "{{$Name}}":
@@ -354,7 +354,7 @@ func (e *Event) GetFieldValue(field eval.Field) (interface{}, error) {
 		{{range $Name, $Field := .Fields}}
 		{{$Return := $Field.Name | printf "e.%s"}}
 		{{if ne $Field.Handler ""}}
-			{{$Return = $Field.Handler | printf "e.%s(e.resolvers)"}}
+			{{$Return = $Field.Handler | printf "e.%s(e)"}}
 		{{end}}
 
 		case "{{$Name}}":

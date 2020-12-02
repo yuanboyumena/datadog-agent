@@ -147,6 +147,52 @@ func TestProcess(t *testing.T) {
 		assert.EqualValues(2, want.SpansFiltered)
 	})
 
+	t.Run("BlacklistPayload", func(t *testing.T) {
+		// Regression test for DataDog/datadog-agent#6500
+		cfg := config.New()
+		cfg.Endpoints[0].APIKey = "test"
+		cfg.Ignore["resource"] = []string{"^INSERT.*"}
+		ctx, cancel := context.WithCancel(context.Background())
+		agnt := NewAgent(ctx, cfg)
+		defer cancel()
+
+		now := time.Now()
+		spanValid := &pb.Span{
+			TraceID:  1,
+			SpanID:   1,
+			Resource: "SELECT name FROM people WHERE age = 42 AND extra = 55",
+			Type:     "sql",
+			Start:    now.Add(-time.Second).UnixNano(),
+			Duration: (500 * time.Millisecond).Nanoseconds(),
+		}
+		spanInvalid := &pb.Span{
+			TraceID:  1,
+			SpanID:   1,
+			Resource: "INSERT INTO db VALUES (1, 2, 3)",
+			Type:     "sql",
+			Start:    now.Add(-time.Second).UnixNano(),
+			Duration: (500 * time.Millisecond).Nanoseconds(),
+		}
+
+		want := agnt.Receiver.Stats.GetTagStats(info.Tags{})
+		assert := assert.New(t)
+
+		agnt.Process(&api.Payload{
+			Traces: pb.Traces{{spanInvalid, spanInvalid}, {spanValid}},
+			Source: want,
+		}, stats.NewSublayerCalculator())
+		assert.EqualValues(1, want.TracesFiltered)
+		assert.EqualValues(2, want.SpansFiltered)
+		var span *pb.Span
+		select {
+		case ss := <-agnt.TraceWriter.In:
+			span = ss.Traces[0].Spans[0]
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout: Expected one valid trace, but none were received.")
+		}
+		assert.Equal("unnamed_operation", span.Name)
+	})
+
 	t.Run("ContainerTags", func(t *testing.T) {
 		cfg := config.New()
 		cfg.Endpoints[0].APIKey = "test"
@@ -247,7 +293,7 @@ func TestProcess(t *testing.T) {
 		timeout := time.After(2 * time.Second)
 		var span *pb.Span
 		select {
-		case ss := <-agnt.Out:
+		case ss := <-agnt.TraceWriter.In:
 			span = ss.Traces[0].Spans[0]
 		case <-timeout:
 			t.Fatal("timed out")
@@ -287,7 +333,7 @@ func TestProcess(t *testing.T) {
 		// expect multiple payloads
 		for i := 0; i < payloadN+2; i++ {
 			select {
-			case ss := <-agnt.Out:
+			case ss := <-agnt.TraceWriter.In:
 				gotCount += int(ss.SpanCount)
 			case <-timeout:
 				t.Fatal("timed out")
@@ -295,6 +341,122 @@ func TestProcess(t *testing.T) {
 		}
 		// without missing a trace
 		assert.Equal(t, gotCount, len(traces))
+	})
+
+	t.Run("sublayer", func(t *testing.T) {
+		for _, tt := range []struct {
+			trace pb.Trace
+			f     func(t *testing.T, spans []*pb.Span)
+		}{
+			{
+				trace: pb.Trace{
+					{
+						TraceID: 1,
+						SpanID:  1,
+						Metrics: map[string]float64{sampler.KeySamplingPriority: 2},
+					},
+					{
+						TraceID:  1,
+						SpanID:   2,
+						ParentID: 1,
+						Metrics:  map[string]float64{sampler.KeySamplingPriority: 2},
+					},
+				},
+				f: func(t *testing.T, spans []*pb.Span) {
+					assert.Equal(t, float64(0), spans[0].Metrics["_sublayers.duration.by_service.sublayer_service:unnamed-service"])
+				},
+			},
+			{
+				trace: pb.Trace{
+					{
+						TraceID: 1,
+						SpanID:  1,
+						Metrics: map[string]float64{sampler.KeySamplingPriority: -1},
+					},
+					{
+						TraceID:  1,
+						SpanID:   2,
+						ParentID: 1,
+						Metrics:  map[string]float64{sampler.KeySamplingPriority: -1},
+					},
+				},
+				f: func(t *testing.T, spans []*pb.Span) {
+					assert.NotContains(t, spans[0].Metrics, "_sublayers.duration.by_service.sublayer_service:unnamed-service")
+				},
+			},
+		} {
+			t.Run("", func(t *testing.T) {
+				cfg := config.New()
+				cfg.Endpoints[0].APIKey = "test"
+				ctx, cancel := context.WithCancel(context.Background())
+				agnt := NewAgent(ctx, cfg)
+				cancel()
+
+				traces := pb.Traces{tt.trace}
+				traceutil.SetTopLevel(tt.trace[0], true)
+				agnt.Process(&api.Payload{
+					Traces: traces,
+					Source: agnt.Receiver.Stats.GetTagStats(info.Tags{}),
+				}, stats.NewSublayerCalculator())
+				tt.f(t, tt.trace)
+			})
+		}
+	})
+}
+
+func TestClientComputedTopLevel(t *testing.T) {
+	cfg := config.New()
+	cfg.Endpoints[0].APIKey = "test"
+	ctx, cancel := context.WithCancel(context.Background())
+	agnt := NewAgent(ctx, cfg)
+	defer cancel()
+	traces := pb.Traces{{{
+		Service:  "something &&<@# that should be a metric!",
+		TraceID:  1,
+		SpanID:   1,
+		Resource: "SELECT name FROM people WHERE age = 42 AND extra = 55",
+		Type:     "sql",
+		Start:    time.Now().Add(-time.Second).UnixNano(),
+		Duration: (500 * time.Millisecond).Nanoseconds(),
+		Metrics:  map[string]float64{sampler.KeySamplingPriority: 2},
+	}}}
+
+	t.Run("on", func(t *testing.T) {
+		go agnt.Process(&api.Payload{
+			Traces:                 traces,
+			Source:                 agnt.Receiver.Stats.GetTagStats(info.Tags{}),
+			ClientComputedTopLevel: true,
+		}, stats.NewSublayerCalculator())
+		timeout := time.After(time.Second)
+		for {
+			select {
+			case ss := <-agnt.TraceWriter.In:
+				_, ok := ss.Traces[0].Spans[0].Metrics["_top_level"]
+				assert.False(t, ok)
+				return
+			case <-timeout:
+				t.Fatal("timed out waiting for input")
+			}
+		}
+	})
+
+	t.Run("off", func(t *testing.T) {
+		go agnt.Process(&api.Payload{
+			Traces:                 traces,
+			Source:                 agnt.Receiver.Stats.GetTagStats(info.Tags{}),
+			ClientComputedTopLevel: false,
+		}, stats.NewSublayerCalculator())
+		timeout := time.After(time.Second)
+		for {
+			select {
+			case ss := <-agnt.TraceWriter.In:
+				_, ok := ss.Traces[0].Spans[0].Metrics["_top_level"]
+				assert.True(t, ok)
+				return
+			case <-timeout:
+				t.Fatal("timed out waiting for input")
+			}
+		}
 	})
 }
 
@@ -632,7 +794,7 @@ func BenchmarkThroughput(b *testing.B) {
 		b.SkipNow()
 	}
 
-	ddlog.SetupDatadogLogger(seelog.Disabled, "") // disable logging
+	ddlog.SetupLogger(seelog.Disabled, "") // disable logging
 
 	folder := filepath.Join(env, "benchmarks")
 	filepath.Walk(folder, func(path string, info os.FileInfo, err error) error {
@@ -662,7 +824,7 @@ func benchThroughput(file string) func(*testing.B) {
 		// start the agent without the trace and stats writers; we will be draining
 		// these channels ourselves in the benchmarks, plus we don't want the writers
 		// resource usage to show up in the results.
-		agnt.Out = make(chan *writer.SampledSpans)
+		agnt.TraceWriter.In = make(chan *writer.SampledSpans)
 		go agnt.Run()
 
 		// wait for receiver to start:
@@ -715,7 +877,7 @@ func benchThroughput(file string) func(*testing.B) {
 		loop:
 			for {
 				select {
-				case <-agnt.Out:
+				case <-agnt.TraceWriter.In:
 					got++
 					if got == count {
 						// processed everything!

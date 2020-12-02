@@ -121,6 +121,7 @@ func (r *HTTPReceiver) Start() {
 	go func() {
 		defer watchdog.LogOnPanic()
 		r.server.Serve(ln)
+		ln.Close()
 	}()
 	log.Infof("Listening for traces at http://%s", addr)
 
@@ -132,8 +133,25 @@ func (r *HTTPReceiver) Start() {
 		go func() {
 			defer watchdog.LogOnPanic()
 			r.server.Serve(ln)
+			ln.Close()
 		}()
 		log.Infof("Listening for traces at unix://%s", path)
+	}
+
+	if path := mainconfig.Datadog.GetString("apm_config.windows_pipe_name"); path != "" {
+		pipepath := `\\.\pipe\` + path
+		bufferSize := mainconfig.Datadog.GetInt("apm_config.windows_pipe_buffer_size")
+		secdec := mainconfig.Datadog.GetString("apm_config.windows_pipe_security_descriptor")
+		ln, err := listenPipe(pipepath, secdec, bufferSize)
+		if err != nil {
+			killProcess("Error creating %q named pipe: %v", pipepath, err)
+		}
+		go func() {
+			defer watchdog.LogOnPanic()
+			r.server.Serve(ln)
+			ln.Close()
+		}()
+		log.Infof("Listening for traces on Windowes pipe %q. Security descriptor is %q", pipepath, secdec)
 	}
 
 	go r.RateLimiter.Run()
@@ -296,6 +314,10 @@ const (
 	// headerTracerVersion specifies the name of the header which contains the version
 	// of the tracer sending the payload.
 	headerTracerVersion = "Datadog-Meta-Tracer-Version"
+
+	// headerComputedTopLevel specifies that the client has marked top-level spans, when set.
+	// Any non-empty value will mean 'yes'.
+	headerComputedTopLevel = "Datadog-Client-Computed-Top-Level"
 )
 
 func (r *HTTPReceiver) tagStats(v Version, req *http.Request) *info.TagStats {
@@ -341,15 +363,23 @@ func (r *HTTPReceiver) replyOK(v Version, w http.ResponseWriter) {
 	}
 }
 
+// rateLimited reports whether n number of traces should be rejected by the API.
+func (r *HTTPReceiver) rateLimited(n int64) bool {
+	if n == 0 {
+		return false
+	}
+	if r.conf.MaxMemory == 0 && r.conf.MaxCPU == 0 {
+		// rate limiting is off
+		return false
+	}
+	return !r.RateLimiter.Permits(n)
+}
+
 // handleTraces knows how to handle a bunch of traces
 func (r *HTTPReceiver) handleTraces(v Version, w http.ResponseWriter, req *http.Request) {
 	ts := r.tagStats(v, req)
-	traceCount, err := traceCount(req)
-	if err != nil {
-		log.Warnf("Error getting trace count: %q. Functionality may be limited.", err)
-	}
-
-	if !r.RateLimiter.Permits(traceCount) {
+	tracen, err := traceCount(req)
+	if err == nil && r.rateLimited(tracen) {
 		// this payload can not be accepted
 		io.Copy(ioutil.Discard, req.Body)
 		w.WriteHeader(r.rateLimiterResponse)
@@ -361,10 +391,17 @@ func (r *HTTPReceiver) handleTraces(v Version, w http.ResponseWriter, req *http.
 	traces, err := decodeTraces(v, req)
 	if err != nil {
 		httpDecodingError(err, []string{"handler:traces", fmt.Sprintf("v:%s", v)}, w)
-		if err == ErrLimitedReaderLimitReached {
-			atomic.AddInt64(&ts.TracesDropped.PayloadTooLarge, traceCount)
-		} else {
-			atomic.AddInt64(&ts.TracesDropped.DecodingError, traceCount)
+		switch err {
+		case ErrLimitedReaderLimitReached:
+			atomic.AddInt64(&ts.TracesDropped.PayloadTooLarge, tracen)
+		case io.EOF, io.ErrUnexpectedEOF:
+			atomic.AddInt64(&ts.TracesDropped.EOF, tracen)
+		default:
+			if err, ok := err.(net.Error); ok && err.Timeout() {
+				atomic.AddInt64(&ts.TracesDropped.Timeout, tracen)
+			} else {
+				atomic.AddInt64(&ts.TracesDropped.DecodingError, tracen)
+			}
 		}
 		log.Errorf("Cannot decode %s traces payload: %v", v, err)
 		return
@@ -376,9 +413,10 @@ func (r *HTTPReceiver) handleTraces(v Version, w http.ResponseWriter, req *http.
 	atomic.AddInt64(&ts.PayloadAccepted, 1)
 
 	payload := &Payload{
-		Source:        ts,
-		Traces:        traces,
-		ContainerTags: getContainerTags(req.Header.Get(headerContainerID)),
+		Source:                 ts,
+		Traces:                 traces,
+		ContainerTags:          getContainerTags(req.Header.Get(headerContainerID)),
+		ClientComputedTopLevel: req.Header.Get(headerComputedTopLevel) != "",
 	}
 	select {
 	case r.out <- payload:
@@ -409,6 +447,10 @@ type Payload struct {
 
 	// Traces contains all the traces received in the payload
 	Traces pb.Traces
+
+	// ClientComputedTopLevel specifies that the client has already marked top-level
+	// spans.
+	ClientComputedTopLevel bool
 }
 
 // handleServices handle a request with a list of several services

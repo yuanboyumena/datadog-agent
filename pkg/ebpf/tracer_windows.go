@@ -5,6 +5,7 @@ package ebpf
 import (
 	"expvar"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/network"
@@ -17,10 +18,14 @@ const (
 
 var (
 	expvarEndpoints map[string]*expvar.Map
-	expvarTypes     = []string{"driver_total_flow_stats", "driver_flow_handle_stats", "total_flows"}
 )
 
 func init() {
+	expvarTypes := []string{"state"}
+	for _, n := range network.DriverExpvarNames {
+		expvarTypes = append(expvarTypes, string(n))
+	}
+
 	expvarEndpoints = make(map[string]*expvar.Map, len(expvarTypes))
 	for _, name := range expvarTypes {
 		expvarEndpoints[name] = expvar.NewMap(name)
@@ -35,6 +40,10 @@ type Tracer struct {
 	state           network.State
 	reverseDNS      network.ReverseDNS
 
+	connStatsActive *network.DriverBuffer
+	connStatsClosed *network.DriverBuffer
+	connLock        sync.Mutex
+
 	timerInterval int
 
 	// ticker for the polling interval for writing
@@ -44,7 +53,7 @@ type Tracer struct {
 
 // NewTracer returns an initialized tracer struct
 func NewTracer(config *Config) (*Tracer, error) {
-	di, err := network.NewDriverInterface(config.EnableMonotonicCount)
+	di, err := network.NewDriverInterface(config.EnableMonotonicCount, config.DriverBufferSize)
 	if err != nil {
 		return nil, fmt.Errorf("could not create windows driver controller: %v", err)
 	}
@@ -62,6 +71,8 @@ func NewTracer(config *Config) (*Tracer, error) {
 		timerInterval:   defaultPollInterval,
 		state:           state,
 		reverseDNS:      network.NewNullReverseDNS(),
+		connStatsActive: network.NewDriverBuffer(512),
+		connStatsClosed: network.NewDriverBuffer(512),
 	}
 
 	go tr.expvarStats(tr.stopChan)
@@ -71,7 +82,10 @@ func NewTracer(config *Config) (*Tracer, error) {
 // Stop function stops running tracer
 func (t *Tracer) Stop() {
 	close(t.stopChan)
-	t.driverInterface.Close()
+	err := t.driverInterface.Close()
+	if err != nil {
+		log.Errorf("error closing driver interface: %s", err)
+	}
 }
 
 func (t *Tracer) expvarStats(exit <-chan struct{}) {
@@ -88,46 +102,51 @@ func (t *Tracer) expvarStats(exit <-chan struct{}) {
 				continue
 			}
 
+			// Move state stats into proper field
+			if states, ok := stats["state"]; ok {
+				if telemetry, ok := states.(map[string]interface{})["telemetry"]; ok {
+					stats["state"] = telemetry
+				}
+			}
+
 			for name, stat := range stats {
 				for metric, val := range stat.(map[string]int64) {
 					currVal := &expvar.Int{}
 					currVal.Set(val)
-					expvarEndpoints[name].Set(snakeToCapInitialCamel(metric), currVal)
+					if ep, ok := expvarEndpoints[name]; ok {
+						ep.Set(snakeToCapInitialCamel(metric), currVal)
+					}
 				}
 			}
 		}
 	}
 }
 
-// printStats can be used to debug the stats we pull from the driver
-func printStats(stats []network.ConnectionStats) {
-	for _, stat := range stats {
-		log.Infof("%v", stat)
-	}
-}
-
 // GetActiveConnections returns all active connections
 func (t *Tracer) GetActiveConnections(clientID string) (*network.Connections, error) {
-	connStatsActive, connStatsClosed, err := t.driverInterface.GetConnectionStats()
+	t.connLock.Lock()
+	defer t.connLock.Unlock()
+
+	t.connStatsActive.Reset()
+	t.connStatsClosed.Reset()
+
+	_, _, err := t.driverInterface.GetConnectionStats(t.connStatsActive, t.connStatsClosed)
 	if err != nil {
-		log.Errorf("failed to get connnections")
+		log.Errorf("failed to get connections")
 		return nil, err
 	}
 
-	for _, connStat := range connStatsClosed {
-		t.state.StoreClosedConnection(connStat)
+	activeConnStats := t.connStatsActive.Connections()
+	closedConnStats := t.connStatsClosed.Connections()
+
+	for _, connStat := range closedConnStats {
+		t.state.StoreClosedConnection(&connStat)
 	}
 
 	// check for expired clients in the state
 	t.state.RemoveExpiredClients(time.Now())
-	conns := t.state.Connections(clientID, uint64(time.Now().Nanosecond()), connStatsActive, t.reverseDNS.GetDNSStats())
+	conns := t.state.Connections(clientID, uint64(time.Now().Nanosecond()), activeConnStats, t.reverseDNS.GetDNSStats())
 	return &network.Connections{Conns: conns}, nil
-}
-
-// getConnections returns all of the active connections in the ebpf maps along with the latest timestamp.  It takes
-// a reusable buffer for appending the active connections so that this doesn't continuously allocate
-func (t *Tracer) getConnections(active []network.ConnectionStats) ([]network.ConnectionStats, uint64, error) {
-	return nil, 0, ErrNotImplemented
 }
 
 // GetStats returns a map of statistics about the current tracer's internal state
@@ -137,15 +156,18 @@ func (t *Tracer) GetStats() (map[string]interface{}, error) {
 		log.Errorf("not printing driver stats: %v", err)
 	}
 
-	return map[string]interface{}{
-		"total_flows":              driverStats["total_flows"],
-		"driver_total_flow_stats":  driverStats["driver_total_flow_stats"],
-		"driver_flow_handle_stats": driverStats["driver_flow_handle_stats"],
-	}, nil
+	stateStats := t.state.GetStats()
+	stats := map[string]interface{}{
+		"state": stateStats,
+	}
+	for _, name := range network.DriverExpvarNames {
+		stats[string(name)] = driverStats[name]
+	}
+	return stats, nil
 }
 
 // DebugNetworkState returns a map with the current tracer's internal state, for debugging
-func (t *Tracer) DebugNetworkState(clientID string) (map[string]interface{}, error) {
+func (t *Tracer) DebugNetworkState(_ string) (map[string]interface{}, error) {
 	return nil, ErrNotImplemented
 }
 
