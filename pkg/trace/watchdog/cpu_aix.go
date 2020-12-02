@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"time"
 )
 
 // From proc(5) on AIX 7.2
@@ -89,7 +90,6 @@ import (
 
 // As explained above, we will skip 120 bytes into the status file to locate the user CPU time.
 const skip = 120
-const nsecs_per_sec = 1000000000
 
 func cpuTimeUser(pid int32) (float64, error) {
 	f, err := os.Open(fmt.Sprintf("/proc/%d/status", pid))
@@ -102,6 +102,6 @@ func cpuTimeUser(pid int32) (float64, error) {
 	var userNsecs int32
 	binary.Read(f, binary.BigEndian, &userSecs)
 	binary.Read(f, binary.BigEndian, &userNsecs)
-	time := float64(userSecs) + (float64(userNsecs) / nsecs_per_sec)
+	time := float64(userSecs) + (float64(userNsecs) / float64(time.Second))
 	return time, nil
 }
