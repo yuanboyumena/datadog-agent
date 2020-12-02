@@ -24,6 +24,8 @@ const (
 	NoisyProcessRuleID = "noisy_process"
 	// AbnormalPathRuleID is the rule ID for the abnormal_path events
 	AbnormalPathRuleID = "abnormal_path"
+	// ForkBombRuleID is the rule ID for the fork_bomb events
+	ForkBombRuleID = "fork_bomb"
 )
 
 // AllCustomRuleIDs returns the list of custom rule IDs
@@ -33,6 +35,7 @@ func AllCustomRuleIDs() []string {
 		RuleSetLoadedRuleID,
 		NoisyProcessRuleID,
 		AbnormalPathRuleID,
+		ForkBombRuleID,
 	}
 }
 
@@ -45,8 +48,8 @@ type CustomEvent struct {
 // Clone returns a copy of the current CustomEvent
 func (ce *CustomEvent) Clone() CustomEvent {
 	return CustomEvent{
-		eventType: ce.eventType,
-		tags: ce.tags,
+		eventType:   ce.eventType,
+		tags:        ce.tags,
 		marshalFunc: ce.marshalFunc,
 	}
 }
@@ -179,6 +182,24 @@ func NewAbnormalPathEvent(event *Event, now time.Time, pathResolutionError error
 					Timestamp:           now,
 					Event:               event,
 					PathResolutionError: pathResolutionError.Error(),
+				})
+			},
+		}
+}
+
+// NewForkBombEvent returns the rule and a populated custom event for a fork_bomb event
+func NewForkBombEvent(event *Event, now time.Time) (*eval.Rule, *CustomEvent) {
+	return &eval.Rule{
+			ID: ForkBombRuleID,
+		}, &CustomEvent{
+			eventType: "fork_bomb",
+			marshalFunc: func() ([]byte, error) {
+				return json.Marshal(struct {
+					Timestamp time.Time `json:"timestamp"`
+					Event     *Event    `json:"triggering_event"`
+				}{
+					Timestamp: now,
+					Event:     event,
 				})
 			},
 		}
