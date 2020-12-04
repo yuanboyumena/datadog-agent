@@ -14,6 +14,7 @@ import (
 	"path"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/security/rules"
 )
@@ -334,12 +335,28 @@ func TestDentryOverlay(t *testing.T) {
 		t.Skip()
 	}
 
-	rule := &rules.RuleDefinition{
-		ID:         "test_rule",
-		Expression: `open.filename == "{{.Root}}/merged/kiki.txt"`,
+	rules := []*rules.RuleDefinition{
+		&rules.RuleDefinition{
+			ID:         "test_rule_open",
+			Expression: `open.filename == "{{.Root}}/merged/kiki.txt"`,
+		},
+		&rules.RuleDefinition{
+			ID:         "test_rule_unlink",
+			Expression: `unlink.filename == "{{.Root}}/merged/kiki.txt"`,
+		},
+		&rules.RuleDefinition{
+			ID:         "test_rule_new",
+			Expression: `open.filename == "{{.Root}}/merged/upper.txt"`,
+		},
 	}
 
-	test, err := newTestModule(nil, []*rules.RuleDefinition{rule}, testOpts{})
+	testDrive, err := newTestDrive("xfs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testDrive.Close()
+
+	test, err := newTestModule(nil, rules, testOpts{testDir: testDrive.Root()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,6 +425,73 @@ func TestDentryOverlay(t *testing.T) {
 		}
 
 		event, _, err := test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
+				t.Errorf("expected filename not found")
+			}
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		fmt.Printf("GGGGGGGGGGGGGGGGGGGGGGGG\n")
+		time.Sleep(3 * time.Second)
+		f, err = os.OpenFile(testFile, os.O_RDWR, 0755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		var inode uint64
+
+		fmt.Printf("XXXXXXXXXXXXXXXXX: %s %d\n", testFile, getInode(t, testFile))
+
+		event, _, err := test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
+				t.Errorf("expected filename not found")
+			}
+
+			if inode = getInode(t, testFile); inode != event.Open.Inode {
+				t.Errorf("expected inode not found %d(real) != %d\n", inode, event.Open.Inode)
+			}
+		}
+
+		if err := os.Remove(testFile); err != nil {
+			t.Fatal(err)
+		}
+
+		event, _, err = test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			fmt.Printf("KKKKKKKKKKKKK: %d %d\n", inode, event.Unlink.Inode)
+			if inode != event.Unlink.Inode {
+				t.Errorf("expected inode not found %d != %d\n", inode, event.Unlink.Inode)
+			}
+		}
+
+		testFile, _, err := test.Path("merged/upper.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		f, err = os.Create(testFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		fmt.Printf("OOOOOOOOOOOOOO: %s %d\n", testFile, getInode(t, testFile))
+
+		event, _, err = test.GetEvent()
 		if err != nil {
 			t.Error(err)
 		} else {
