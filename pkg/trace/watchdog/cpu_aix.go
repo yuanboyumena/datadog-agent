@@ -88,18 +88,18 @@ import (
 // followed by:
 //	struct pr_timestruc64_t pr_utime;   /* process user cpu time */
 
-// As explained above, we will skip 120 bytes into the status file to locate the user CPU time.
-const skip = 120
-
 func cpuTimeUser(pid int32) (float64, error) {
 	f, err := os.Open(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
-	f.Seek(skip, os.SEEK_SET)
-	var userSecs int64
-	var userNsecs int32
+	// As explained above, we will skip 120 bytes into the status file to locate the user CPU time.
+	f.Seek(120, os.SEEK_SET)
+	var (
+		userSecs  int64
+		userNsecs int32
+	)
 	binary.Read(f, binary.BigEndian, &userSecs)
 	binary.Read(f, binary.BigEndian, &userNsecs)
 	time := float64(userSecs) + (float64(userNsecs) / float64(time.Second))

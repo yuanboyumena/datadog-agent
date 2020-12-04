@@ -8,4 +8,4 @@
 ---
 features:
   - |
-    APM - add AIX support for the trace-agent
+    APM: Add support for AIX.
