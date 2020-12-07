@@ -437,7 +437,7 @@ func TestDentryOverlay(t *testing.T) {
 	t.Run("delete", func(t *testing.T) {
 		fmt.Printf("GGGGGGGGGGGGGGGGGGGGGGGG\n")
 		time.Sleep(3 * time.Second)
-		f, err = os.OpenFile(testFile, os.O_RDWR, 0755)
+		f, err = os.OpenFile(testFile, os.O_RDONLY, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
