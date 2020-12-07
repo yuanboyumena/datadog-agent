@@ -217,7 +217,7 @@ int __attribute__((always_inline)) trace__sys_open_ret(struct pt_regs *ctx) {
     // add an real entry to reach the first dentry with the proper inode
     u64 inode = syscall->open.path_key.ino;
 
-    // add an real entry to reach the first dentry with the proper inode
+    // on kernel 4.18 and maybe others the lower inode is used as userspace inode
     u64 ino = get_ovl_lower_ino(syscall->open.dentry);;
     if (ino) {
         inode = ino;

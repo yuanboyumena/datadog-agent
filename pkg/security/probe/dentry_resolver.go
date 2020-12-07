@@ -84,7 +84,24 @@ type PathValue struct {
 // DelCacheEntry removes an entry from the cache
 func (dr *DentryResolver) DelCacheEntry(mountID uint32, inode uint64) {
 	if entries, exists := dr.cache[mountID]; exists {
-		entries.Remove(inode)
+		key := PathKey{Inode: inode}
+
+		// Delete path recursively
+		for {
+			path, exists := entries.Get(key.Inode)
+			if !exists {
+				break
+			}
+			entries.Remove(key.Inode)
+
+			parent := path.(PathValue).Parent
+			if parent.Inode == 0 {
+				break
+			}
+
+			// Prepare next key
+			key = parent
+		}
 	}
 }
 

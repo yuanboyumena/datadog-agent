@@ -14,6 +14,7 @@ import (
 	"path"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/security/rules"
 )
@@ -337,15 +338,11 @@ func TestDentryOverlay(t *testing.T) {
 	rules := []*rules.RuleDefinition{
 		&rules.RuleDefinition{
 			ID:         "test_rule_open",
-			Expression: `open.filename == "{{.Root}}/merged/kiki.txt"`,
+			Expression: `open.filename in ["{{.Root}}/merged/file1.txt", "{{.Root}}/merged/file2.txt", "{{.Root}}/merged/new.txt"]`,
 		},
 		&rules.RuleDefinition{
 			ID:         "test_rule_unlink",
-			Expression: `unlink.filename == "{{.Root}}/merged/kiki.txt"`,
-		},
-		&rules.RuleDefinition{
-			ID:         "test_rule_new",
-			Expression: `open.filename == "{{.Root}}/merged/upper.txt"`,
+			Expression: `unlink.filename in ["{{.Root}}/merged/file1.txt", "{{.Root}}/merged/file2.txt", "{{.Root}}/merged/new.txt"]`,
 		},
 	}
 
@@ -363,17 +360,13 @@ func TestDentryOverlay(t *testing.T) {
 
 	testLower, testUpper, testWordir, testMerged := createOverlayLayers(t, test)
 
-	testFile, _, err := test.Path("lower/kiki.txt")
+	_, _, err = test.Create("lower/file1.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	f, err := os.Create(testFile)
+	_, _, err = test.Create("lower/file2.txt")
 	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -385,60 +378,27 @@ func TestDentryOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// wait until the mount event is reported until the event ordered bug is fixed
+	time.Sleep(2 * time.Second)
+
 	defer func() {
 		exec.Command("umount", testMerged).CombinedOutput()
 	}()
 
-	testFile, _, err = test.Path("merged/kiki.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("read-only", func(t *testing.T) {
-		f, err = os.Open(testFile)
+	// open a file in lower in RDONLY and check that open/unlink inode are valid from userspace
+	// perspective and equals
+	t.Run("read-lower", func(t *testing.T) {
+		testFile, _, err := test.Path("merged/file1.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
-
-		event, _, err := test.GetEvent()
-		if err != nil {
-			t.Error(err)
-		} else {
-			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
-				t.Errorf("expected filename not found")
-			}
-		}
-	})
-
-	t.Run("read-write", func(t *testing.T) {
-		f, err = os.OpenFile(testFile, os.O_RDWR, 0755)
+		f, err := os.OpenFile(testFile, os.O_RDONLY, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
-
-		event, _, err := test.GetEvent()
-		if err != nil {
-			t.Error(err)
-		} else {
-			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
-				t.Errorf("expected filename not found")
-			}
-		}
-	})
-
-	t.Run("delete-lower", func(t *testing.T) {
-		f, err = os.OpenFile(testFile, os.O_RDONLY, 0755)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
+		if err = f.Close(); err != nil {
 			t.Fatal(err)
 		}
 
@@ -471,12 +431,19 @@ func TestDentryOverlay(t *testing.T) {
 		}
 	})
 
+	// open a file in lower in RDWR, so a new file is created, and check that open/unlink inode are valid from userspace
+	// perspective and equals
 	t.Run("override-lower", func(t *testing.T) {
-		f, err = os.OpenFile(testFile, os.O_RDWR, 0755)
+		testFile, _, err := test.Path("merged/file2.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.Close(); err != nil {
+
+		f, err := os.OpenFile(testFile, os.O_RDWR, 0755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = f.Close(); err != nil {
 			t.Fatal(err)
 		}
 
@@ -488,6 +455,42 @@ func TestDentryOverlay(t *testing.T) {
 		} else {
 			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
 				t.Errorf("expected filename not found")
+			}
+
+			if inode = getInode(t, testFile); inode != event.Open.Inode {
+				t.Errorf("expected inode not found %d(real) != %d\n", inode, event.Open.Inode)
+			}
+		}
+
+		if err := os.Remove(testFile); err != nil {
+			t.Fatal(err)
+		}
+
+		event, _, err = test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if inode != event.Unlink.Inode {
+				t.Errorf("expected inode not found %d != %d\n", inode, event.Unlink.Inode)
+			}
+		}
+	})
+
+	// create a file in the upper layer
+	t.Run("new-upper", func(t *testing.T) {
+		testFile, _, err := test.Create("merged/new.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var inode uint64
+
+		event, _, err := test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
+				t.Errorf("expected filename not found: %s != %s", value.(string), testFile)
 			}
 
 			if inode = getInode(t, testFile); inode != event.Open.Inode {
