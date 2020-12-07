@@ -14,7 +14,6 @@ import (
 	"path"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/security/rules"
 )
@@ -434,9 +433,7 @@ func TestDentryOverlay(t *testing.T) {
 		}
 	})
 
-	t.Run("delete", func(t *testing.T) {
-		fmt.Printf("GGGGGGGGGGGGGGGGGGGGGGGG\n")
-		time.Sleep(3 * time.Second)
+	t.Run("delete-lower", func(t *testing.T) {
 		f, err = os.OpenFile(testFile, os.O_RDONLY, 0755)
 		if err != nil {
 			t.Fatal(err)
@@ -446,8 +443,6 @@ func TestDentryOverlay(t *testing.T) {
 		}
 
 		var inode uint64
-
-		fmt.Printf("XXXXXXXXXXXXXXXXX: %s %d\n", testFile, getInode(t, testFile))
 
 		event, _, err := test.GetEvent()
 		if err != nil {
@@ -470,18 +465,14 @@ func TestDentryOverlay(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		} else {
-			fmt.Printf("KKKKKKKKKKKKK: %d %d\n", inode, event.Unlink.Inode)
 			if inode != event.Unlink.Inode {
 				t.Errorf("expected inode not found %d != %d\n", inode, event.Unlink.Inode)
 			}
 		}
+	})
 
-		testFile, _, err := test.Path("merged/upper.txt")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		f, err = os.Create(testFile)
+	t.Run("override-lower", func(t *testing.T) {
+		f, err = os.OpenFile(testFile, os.O_RDWR, 0755)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -489,14 +480,31 @@ func TestDentryOverlay(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fmt.Printf("OOOOOOOOOOOOOO: %s %d\n", testFile, getInode(t, testFile))
+		var inode uint64
 
-		event, _, err = test.GetEvent()
+		event, _, err := test.GetEvent()
 		if err != nil {
 			t.Error(err)
 		} else {
 			if value, _ := event.GetFieldValue("open.filename"); value.(string) != testFile {
 				t.Errorf("expected filename not found")
+			}
+
+			if inode = getInode(t, testFile); inode != event.Open.Inode {
+				t.Errorf("expected inode not found %d(real) != %d\n", inode, event.Open.Inode)
+			}
+		}
+
+		if err := os.Remove(testFile); err != nil {
+			t.Fatal(err)
+		}
+
+		event, _, err = test.GetEvent()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if inode != event.Unlink.Inode {
+				t.Errorf("expected inode not found %d != %d\n", inode, event.Unlink.Inode)
 			}
 		}
 	})
