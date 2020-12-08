@@ -132,8 +132,7 @@ type testProbe struct {
 }
 
 type testEventHandler struct {
-	ruleSet *rules.RuleSet
-	events  chan *sprobe.Event
+	events       chan *sprobe.Event
 	customEvents chan *module.RuleEvent
 }
 
@@ -145,14 +144,14 @@ func (h *testEventHandler) HandleEvent(event *sprobe.Event) {
 	default:
 		log.Debugf("dropped probe event %+v")
 	}
-	h.ruleSet.Evaluate(event)
+	testMod.module.HandleEvent(event)
 }
 
 func (h *testEventHandler) HandleCustomEvent(rule *eval.Rule, event *sprobe.CustomEvent) {
 	e := event.Clone()
 	re := module.RuleEvent{
 		RuleID: rule.ID,
-		Event: &e,
+		Event:  &e,
 	}
 	select {
 	case h.customEvents <- &re:
@@ -230,26 +229,6 @@ func setTestPolicy(dir string, macros []*rules.MacroDefinition, rules []*rules.R
 }
 
 func newTestModule(macros []*rules.MacroDefinition, rules []*rules.RuleDefinition, opts testOpts) (*testModule, error) {
-	defer func() {
-		if testMod == nil {
-			return
-		}
-
-		if opts.wantProbeEvents {
-			ruleSet := testMod.module.GetRuleSet()
-			handler := &testEventHandler{
-				events:  make(chan *sprobe.Event, 16384),
-				customEvents: make(chan *module.RuleEvent, 16384),
-				ruleSet: ruleSet,
-			}
-			testMod.probeHandler = handler
-			testMod.probe.SetEventHandler(handler)
-		} else {
-			testMod.probeHandler = nil
-			testMod.probe.SetEventHandler(testMod.module)
-		}
-	}()
-
 	st, err := newSimpleTest(macros, rules, opts.testDir)
 	if err != nil {
 		return nil, err
@@ -296,6 +275,10 @@ func newTestModule(macros []*rules.MacroDefinition, rules []*rules.RuleDefinitio
 		probe:      mod.(*module.Module).GetProbe(),
 		events:     make(chan testEvent, eventChanLength),
 		discarders: make(chan *testDiscarder, discarderChanLength),
+		probeHandler: &testEventHandler{
+			events:       make(chan *sprobe.Event, 16384),
+			customEvents: make(chan *module.RuleEvent, 16384),
+		},
 	}
 
 	if err := mod.Register(nil); err != nil {
@@ -304,6 +287,8 @@ func newTestModule(macros []*rules.MacroDefinition, rules []*rules.RuleDefinitio
 
 	rs := mod.(*module.Module).GetRuleSet()
 	rs.AddListener(testMod)
+
+	testMod.probe.SetEventHandler(testMod.probeHandler)
 
 	return testMod, nil
 }
@@ -362,6 +347,29 @@ func (tm *testModule) GetEvent() (*sprobe.Event, *eval.Rule, error) {
 			return nil, nil, errors.New("invalid event")
 		case <-timeout:
 			return nil, nil, errors.New("timeout")
+		}
+	}
+}
+
+func (tm *testModule) GetProbeCustomEvent(timeout time.Duration, eventType ...eval.EventType) (*module.RuleEvent, error) {
+	if tm.probeHandler == nil {
+		return nil, errors.New("could not get the probe events without using the `wantoProbeEvents` test option")
+	}
+
+	t := time.After(timeout)
+
+	for {
+		select {
+		case ruleEvent := <-tm.probeHandler.customEvents:
+			if len(eventType) > 0 {
+				if ruleEvent.Event.GetType() == eventType[0] {
+					return ruleEvent, nil
+				}
+			} else {
+				return ruleEvent, nil
+			}
+		case <-t:
+			return nil, errors.New("timeout")
 		}
 	}
 }
@@ -463,49 +471,32 @@ func (t *simpleTest) load(macros []*rules.MacroDefinition, rules []*rules.RuleDe
 	return nil
 }
 
-var logInitilialized bool
+func (t *simpleTest) setLogLevel(loglevel seelog.LogLevel) error {
+	if logger == nil {
+		logFormat := "%Ns [%LEVEL] %Func:%Line %Msg\n"
+		var err error
+		logger, err = seelog.LoggerFromWriterWithMinLevelAndFormat(os.Stdout, seelog.TraceLvl, logFormat)
+		if err != nil {
+			return err
+		}
+	}
+	log.SetupLogger(logger, loglevel.String())
+	return nil
+}
 
 func newSimpleTest(macros []*rules.MacroDefinition, rules []*rules.RuleDefinition, testDir string) (*simpleTest, error) {
 	var err error
 
-	if !logInitilialized {
-		var logLevel seelog.LogLevel = seelog.InfoLvl
-		if testing.Verbose() {
-			logLevel = seelog.TraceLvl
-		}
-
-		constraints, err := seelog.NewMinMaxConstraints(logLevel, seelog.CriticalLvl)
-		if err != nil {
-			return nil, err
-		}
-
-		formatter, err := seelog.NewFormatter("%Ns [%LEVEL] %Func %Line %Msg\n")
-		if err != nil {
-			return nil, err
-		}
-
-		dispatcher, err := seelog.NewSplitDispatcher(formatter, []interface{}{os.Stderr})
-		if err != nil {
-			return nil, err
-		}
-
-		specificConstraints, _ := seelog.NewListConstraints([]seelog.LogLevel{})
-		ex, _ := seelog.NewLogLevelException("*.Snapshot", "*", specificConstraints)
-		exceptions := []*seelog.LogLevelException{ex}
-
-		logger := seelog.NewAsyncLoopLogger(seelog.NewLoggerConfig(constraints, exceptions, dispatcher))
-
-		err = seelog.ReplaceLogger(logger)
-		if err != nil {
-			return nil, err
-		}
-		log.SetupLogger(logger, logLevel.String())
-
-		logInitilialized = true
-	}
-
 	t := &simpleTest{
 		root: testDir,
+	}
+
+	var logLevel seelog.LogLevel = seelog.InfoLvl
+	if testing.Verbose() {
+		logLevel = seelog.TraceLvl
+	}
+	if err := t.setLogLevel(logLevel); err != nil {
+		return nil, err
 	}
 
 	if testDir == "" {

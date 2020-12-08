@@ -122,7 +122,7 @@ func NewRuleSetLoadedEvent(loadedPolicies map[string]string, loadedRules []rules
 	return &eval.Rule{
 			ID: RuleSetLoadedRuleID,
 		}, &CustomEvent{
-			eventType: "ruleset_loaded",
+			eventType: RuleSetLoadedRuleID,
 			marshalFunc: func() ([]byte, error) {
 				return json.Marshal(struct {
 					Timestamp time.Time         `json:"timestamp"`
@@ -144,7 +144,7 @@ func NewNoisyProcessEvent(eventType EventType, count uint64, threshold int64, co
 	return &eval.Rule{
 			ID: NoisyProcessRuleID,
 		}, &CustomEvent{
-			eventType: "noisy_process",
+			eventType: NoisyProcessRuleID,
 			marshalFunc: func() ([]byte, error) {
 				return json.Marshal(struct {
 					Timestamp      time.Time          `json:"timestamp"`
@@ -192,7 +192,7 @@ func NewForkBombEvent(event *Event, now time.Time) (*eval.Rule, *CustomEvent) {
 	return &eval.Rule{
 			ID: ForkBombRuleID,
 		}, &CustomEvent{
-			eventType: "fork_bomb",
+			eventType: ForkBombRuleID,
 			marshalFunc: func() ([]byte, error) {
 				return json.Marshal(struct {
 					Timestamp time.Time `json:"timestamp"`
