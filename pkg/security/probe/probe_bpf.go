@@ -107,7 +107,6 @@ func (p *Probe) detectKernelVersion() {
 // Init initializes the probe
 func (p *Probe) Init() error {
 	p.startTime = time.Now()
-	p.detectKernelVersion()
 
 	asset := "runtime-security"
 	openSyscall, err := manager.GetSyscallFnName("open")
@@ -715,6 +714,7 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 		managerOptions:    ebpf.NewDefaultOptions(),
 		regexCache:        regexCache,
 	}
+	p.detectKernelVersion()
 
 	if !p.config.EnableKernelFilters {
 		log.Warn("Forcing in-kernel filter policy to `pass`: filtering not enabled")
@@ -724,6 +724,18 @@ func NewProbe(config *config.Config, client *statsd.Client) (*Probe, error) {
 		// Add syscall monitor probes
 		p.managerOptions.ActivatedProbes = append(p.managerOptions.ActivatedProbes, probes.SyscallMonitorSelectors...)
 	}
+
+	// Add global constant editors
+	p.managerOptions.ConstantEditors = append(p.managerOptions.ConstantEditors,
+		manager.ConstantEditor{
+			Name:  "mount_id_offset",
+			Value: getMountIDOffset(p),
+		},
+		manager.ConstantEditor{
+			Name:  "sizeof_inode",
+			Value: getSizeOfStructInode(p),
+		},
+	)
 
 	resolvers, err := NewResolvers(p)
 	if err != nil {
