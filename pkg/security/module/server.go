@@ -15,13 +15,14 @@ import (
 	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
+	"github.com/pkg/errors"
 	"golang.org/x/time/rate"
 
 	"github.com/DataDog/datadog-agent/pkg/security/api"
 	"github.com/DataDog/datadog-agent/pkg/security/config"
+	"github.com/DataDog/datadog-agent/pkg/security/probe"
 	sprobe "github.com/DataDog/datadog-agent/pkg/security/probe"
 	"github.com/DataDog/datadog-agent/pkg/security/rules"
-	"github.com/DataDog/datadog-agent/pkg/security/secl/eval"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
@@ -66,19 +67,41 @@ LOOP:
 }
 
 // SendEvent forwards events sent by the runtime security module to Datadog
-func (e *EventServer) SendEvent(rule *eval.Rule, event eval.Event) {
-	data, err := json.Marshal(rules.RuleEvent{Event: event, RuleID: rule.ID})
+func (e *EventServer) SendEvent(rule *rules.Rule, event *probe.Event) {
+	agentContext := &AgentContext{
+		RuleID: rule.Definition.ID,
+		Tags:   append(rule.Tags, "rule_id:"+rule.Definition.ID),
+	}
+
+	ruleEvent := &RuleEvent{
+		Title:        rule.Definition.ID,
+		Msg:          rule.Definition.Description,
+		AgentContext: agentContext,
+	}
+
+	if policy := rule.Definition.Policy; policy != nil {
+		agentContext.PolicyName = policy.Name
+		agentContext.PolicyVersion = policy.Version
+	}
+
+	probeJSON, err := event.MarshalJSON()
 	if err != nil {
+		log.Error(errors.Wrap(err, "failed to marshal event"))
 		return
 	}
-	tags := append(rule.Tags, "rule_id:"+rule.ID)
-	tags = append(tags, event.(*sprobe.Event).GetTags()...)
-	log.Tracef("Sending event message for rule `%s` to security-agent `%s` with tags %v", rule.ID, string(data), tags)
+
+	ruleEventJSON, err := json.Marshal(ruleEvent)
+	if err != nil {
+		log.Error(errors.Wrap(err, "failed to marshal event context"))
+		return
+	}
+
+	data := append(probeJSON[:len(probeJSON)-1], ',')
+	data = append(data, ruleEventJSON[1:]...)
+	log.Tracef("Sending event message for rule `%s` to security-agent `%s`", rule.ID, string(data))
 
 	msg := &api.SecurityEventMessage{
-		RuleID: rule.ID,
-		Type:   event.GetType(),
-		Tags:   tags,
+		RuleID: rule.Definition.ID,
 		Data:   data,
 	}
 

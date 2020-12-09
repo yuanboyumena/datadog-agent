@@ -233,6 +233,14 @@ func (m *Model) GetEvaluator(field eval.Field) (eval.Evaluator, error) {
 			Field: field,
 		}, nil
 
+	case "exec.uid":
+
+		return &eval.IntEvaluator{
+			EvalFnc: func(ctx *eval.Context) int { return int((*Event)(ctx.Object).Exec.ResolveGID((*Event)(ctx.Object))) },
+
+			Field: field,
+		}, nil
+
 	case "exec.user":
 
 		return &eval.StringEvaluator{
@@ -1115,6 +1123,10 @@ func (e *Event) GetFieldValue(field eval.Field) (interface{}, error) {
 
 		return e.Exec.ResolveTTY(e), nil
 
+	case "exec.uid":
+
+		return int(e.Exec.ResolveGID(e)), nil
+
 	case "exec.user":
 
 		return e.Exec.ResolveUser(e), nil
@@ -1553,6 +1565,9 @@ func (e *Event) GetFieldEventType(field eval.Field) (eval.EventType, error) {
 	case "exec.tty_name":
 		return "exec", nil
 
+	case "exec.uid":
+		return "exec", nil
+
 	case "exec.user":
 		return "exec", nil
 
@@ -1928,6 +1943,10 @@ func (e *Event) GetFieldType(field eval.Field) (reflect.Kind, error) {
 	case "exec.tty_name":
 
 		return reflect.String, nil
+
+	case "exec.uid":
+
+		return reflect.Int, nil
 
 	case "exec.user":
 
@@ -2498,6 +2517,15 @@ func (e *Event) SetFieldValue(field eval.Field, value interface{}) error {
 		}
 		return nil
 
+	case "exec.uid":
+
+		v, ok := value.(int)
+		if !ok {
+			return &eval.ErrValueTypeMismatch{Field: "Exec.GID"}
+		}
+		e.Exec.GID = uint32(v)
+		return nil
+
 	case "exec.user":
 
 		if e.Exec.User, ok = value.(string); !ok {
@@ -2628,7 +2656,7 @@ func (e *Event) SetFieldValue(field eval.Field, value interface{}) error {
 		if !ok {
 			return &eval.ErrValueTypeMismatch{Field: "Mkdir.Mode"}
 		}
-		e.Mkdir.Mode = int32(v)
+		e.Mkdir.Mode = uint32(v)
 		return nil
 
 	case "mkdir.overlay_numlower":
