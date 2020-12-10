@@ -2,6 +2,7 @@
 #include "tracer-maps.h"
 #include "bpf_helpers.h"
 #include "syscalls.h"
+#include "ipv6.h"
 #include <linux/kconfig.h>
 #include <net/inet_sock.h>
 #include <net/net_namespace.h>
