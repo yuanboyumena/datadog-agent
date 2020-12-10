@@ -184,6 +184,7 @@ func (p *Processor) updateRateLimitingMetrics() error {
 func NewDatadogClient() (*datadog.Client, error) {
 	apiKey := config.Datadog.GetString("api_key")
 	appKey := config.Datadog.GetString("app_key")
+	endpoint := config.Datadog.GetString("external_metrics_provider.endpoint")
 
 	if appKey == "" || apiKey == "" {
 		return nil, errors.New("missing the api/app key pair to query Datadog")
@@ -195,6 +196,10 @@ func NewDatadogClient() (*datadog.Client, error) {
 	client.HttpClient.Transport = httputils.CreateHTTPTransport()
 	client.RetryTimeout = 3 * time.Second
 	client.ExtraHeader["User-Agent"] = "Datadog-Cluster-Agent"
+
+	if endpoint != "" {
+		client.SetBaseUrl(endpoint)
+	}
 
 	return client, nil
 }
