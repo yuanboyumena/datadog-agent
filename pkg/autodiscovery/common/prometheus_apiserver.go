@@ -42,3 +42,33 @@ func (pc *PrometheusCheck) ConfigsForService(svc *v1.Service) []integration.Conf
 
 	return configs
 }
+
+// ConfigsForServiceEndpoints returns the openmetrics configurations for a given endpoints if it matches the AD
+// configuration for related service
+func (pc *PrometheusCheck) ConfigsForServiceEndpoints(svc *v1.Service, ep *v1.Endpoints) []integration.Config {
+	var configs []integration.Config
+	namespacedName := fmt.Sprintf("%s/%s", svc.GetNamespace(), svc.GetName())
+	if pc.isExcluded(svc.GetAnnotations(), namespacedName) {
+		return configs
+	}
+
+	instances, found := pc.buildInstances(svc.GetAnnotations(), namespacedName)
+	if found {
+		for _, subset := range ep.Subsets {
+			for _, address := range subset.Addresses {
+				endpointsID := apiserver.EntityForEndpoints(ep.GetNamespace(), ep.GetName(), address.IP)
+				configs = append(configs, integration.Config{
+					Name:          openmetricsCheckName,
+					InitConfig:    integration.Data(openmetricsInitConfig),
+					Instances:     instances,
+					ClusterCheck:  true,
+					Provider:      names.PrometheusServices,
+					Source:        "prometheus_services:" + endpointsID,
+					ADIdentifiers: []string{endpointsID},
+				})
+			}
+		}
+	}
+
+	return configs
+}
